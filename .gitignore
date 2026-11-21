@@ -1,0 +1,62 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Editors and operating systems
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+
+# Frontend
+node_modules/
+dist/
+coverage/
+
+# Local data and uploaded media
+storage/
+uploads/
+datasets/
+research/**/data/
+research/**/raw/
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+
+# Model and serialized artifacts
+ml_artifacts/*
+!ml_artifacts/README.md
+*.pt
+*.pth
+*.onnx
+*.safetensors
+*.h5
+*.keras
+*.pkl
+*.pickle
+*.joblib
+*.ckpt
+
+# Local databases and logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
