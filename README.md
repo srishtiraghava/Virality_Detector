@@ -34,7 +34,7 @@ Copy-Item .env.example .env
 Edit `.env` before starting local infrastructure. Replace the placeholder username and password, and set `DATABASE_URL` to use the same credentials and database, for example:
 
 ```text
-DATABASE_URL=postgresql+psycopg://<your-user>:<your-password>@localhost:5432/viralscope
+DATABASE_URL=postgresql+psycopg://<your-user>:<your-password>@127.0.0.1:5433/viralscope
 ```
 
 Use URL-encoded characters if the database password contains reserved URL characters. `SECRET_KEY` is not used by this foundation; set a securely generated value before introducing features that need it.
