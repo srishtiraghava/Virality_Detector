@@ -2,6 +2,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum as SqlEnum,
@@ -46,6 +47,8 @@ class Video(Base):
     height: Mapped[int | None] = mapped_column(Integer)
     fps: Mapped[float | None] = mapped_column(Float)
     aspect_ratio: Mapped[float | None] = mapped_column(Float)
+    video_codec: Mapped[str | None] = mapped_column(String(100))
+    has_audio: Mapped[bool | None] = mapped_column(Boolean)
     target_platform: Mapped[str] = mapped_column(String(100), nullable=False)
     content_category: Mapped[str] = mapped_column(String(100), nullable=False)
     status: Mapped[VideoStatus] = mapped_column(

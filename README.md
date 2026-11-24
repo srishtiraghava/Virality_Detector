@@ -1,6 +1,6 @@
 # ViralScope AI
 
-ViralScope AI is a modular-monolith foundation for a multimodal video intelligence and virality-prediction platform. The backend includes PostgreSQL persistence foundations and email/password authentication with Argon2id password hashing and signed JWT access tokens. Video processing, machine learning, and product features are not implemented.
+ViralScope AI is a modular-monolith foundation for a multimodal video intelligence and virality-prediction platform. The backend includes PostgreSQL persistence, email/password authentication, authenticated video upload and management, FFprobe metadata extraction, and analysis-job creation. Analysis execution, machine learning, and recommendations are not implemented.
 
 ## Architecture
 
@@ -10,7 +10,7 @@ ViralScope AI is a modular-monolith foundation for a multimodal video intelligen
 - **Frontend:** `frontend/` is reserved for a future React, TypeScript, and Vite application.
 - **Research and artifacts:** `research/` and `ml_artifacts/` keep future experiments and generated model files separate from application code.
 
-The backend separates HTTP routes, configuration, database access, models, schemas, repositories, services, and ML concerns. Service and ML subpackages are structural only.
+The backend separates HTTP routes, configuration, database access, models, schemas, repositories, and domain services. Upload storage and FFprobe metadata extraction are implemented; ML subpackages remain structural only.
 
 ## Prerequisites
 
@@ -18,6 +18,7 @@ The backend separates HTTP routes, configuration, database access, models, schem
 - Python 3.11.
 - Git.
 - Docker Desktop with the Docker Engine running for PostgreSQL and Redis.
+- FFmpeg tools on `PATH`: FFprobe is required by the API; FFmpeg is used to generate valid media fixtures for tests.
 
 ## Windows PowerShell setup
 
@@ -62,6 +63,23 @@ The API is available at `http://127.0.0.1:8000`. Interactive API documentation i
 - `POST /api/v1/auth/register` creates an account.
 - `POST /api/v1/auth/login` verifies credentials and returns a bearer access token.
 - `GET /api/v1/auth/me` returns the authenticated user's safe profile.
+- `POST /api/v1/videos/upload` validates and stores an authenticated user's video.
+- `GET /api/v1/videos` and `GET /api/v1/videos/{video_id}` list or retrieve only the authenticated user's videos.
+- `DELETE /api/v1/videos/{video_id}` removes an owned video and its local media file.
+- `POST /api/v1/videos/{video_id}/analyze` creates a pending analysis job; it does not run analysis.
+- `GET /api/v1/jobs/{job_id}` retrieves a job only when it belongs to the authenticated user.
+
+Uploads accept MP4, MOV, M4V, WebM, and MKV containers with matching MIME types. FFprobe verifies the actual container and video stream before a record is marked available. The maximum upload size is controlled by `MAX_UPLOAD_SIZE_MB`; local files are stored under `STORAGE_LOCAL_PATH`.
+
+Example PowerShell upload using the bearer token from the authentication example:
+
+```powershell
+curl.exe -X POST http://127.0.0.1:8000/api/v1/videos/upload `
+    -H "Authorization: Bearer $token" `
+    -F "file=@C:\path\to\video.mp4;type=video/mp4" `
+    -F "target_platform=shorts" `
+    -F "content_category=education"
+```
 
 Example PowerShell authentication flow:
 
@@ -113,5 +131,7 @@ Unit tests use FastAPI's in-process client and SQLite. PostgreSQL integration te
 ## Database migrations
 
 The initial migration creates `users`, `videos`, and `analysis_jobs` and is applied at revision `009dcf5dec6b`. For future revisions, inspect the generated migration before applying it with `python -m alembic upgrade head` from `backend\`.
+
+Video media metadata adds nullable `video_codec` and `has_audio` columns. Revision `f3f4f6417ac5` is generated for review and has not been applied. Do not apply it until the migration is approved.
 
 PostgreSQL integration tests require an explicit `TEST_DATABASE_URL` and create a unique temporary schema that is dropped after each test. Unit tests use in-memory SQLite and do not require Docker.

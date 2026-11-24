@@ -3,12 +3,19 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.models.enums import VideoStatus
 from app.models.video import Video
 from app.schemas.video import VideoCreate
 
 
-def create_video(session: Session, user_id: UUID, video_data: VideoCreate) -> Video:
-    video = Video(user_id=user_id, **video_data.model_dump())
+def create_video(
+    session: Session,
+    user_id: UUID,
+    video_data: VideoCreate,
+    *,
+    status: VideoStatus = VideoStatus.PENDING,
+) -> Video:
+    video = Video(user_id=user_id, status=status, **video_data.model_dump())
     session.add(video)
     session.commit()
     session.refresh(video)

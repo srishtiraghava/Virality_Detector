@@ -4,13 +4,15 @@ ViralScope AI starts as a modular monolith: one deployable backend with explicit
 
 ## Repository layout
 
-- `backend/app/api/v1/` — versioned HTTP routes and router composition.
+- `backend/app/api/v1/` — versioned health, authentication, video, and analysis-job HTTP routes and router composition.
 - `backend/app/core/` — application configuration, logging, and cross-cutting concerns.
 - `backend/app/database/` — SQLAlchemy declarative base, engine, session factory, and request dependency.
 - `backend/app/models/` — SQLAlchemy persistence models for users, videos, and analysis jobs.
 - `backend/app/schemas/` — Pydantic request, response, and job status contracts.
 - `backend/app/repositories/` — SQLAlchemy persistence operations, including owner-scoped video access and analysis job lifecycle updates.
-- `backend/app/services/` — future application services, grouped by domain (`upload`, `video`, `audio`, `visual`, `transcript`, `features`, `prediction`, and `recommendations`).
+- `backend/app/services/upload/` — storage interface and local filesystem implementation, including staged file deletion.
+- `backend/app/services/video/` — FFprobe metadata extraction and video lifecycle orchestration.
+- `backend/app/services/` — other future application services, grouped by domain (`audio`, `visual`, `transcript`, `features`, `prediction`, and `recommendations`).
 - `backend/app/ml/` — future preprocessing, training, inference, evaluation, calibration, and explainability code; no ML implementation is included.
 - `backend/app/workers/` — reserved for future background jobs.
 - `backend/app/utils/` — small shared utilities that do not belong to a domain module.
@@ -24,6 +26,8 @@ ViralScope AI starts as a modular monolith: one deployable backend with explicit
 ## Runtime boundaries
 
 FastAPI routes live under `/api/v1`. Configuration is loaded centrally with `pydantic-settings`; secrets are not logged. The SQLAlchemy engine is created without opening a database connection, and connections are made only when a session or the database health check is used. PostgreSQL is the configured database; Redis is provisioned for future local development but is not yet used by the application.
+
+Video uploads require the existing bearer-token dependency. The upload service streams request data through a bounded temporary file, validates the container and video stream with FFprobe, then stores it through the storage interface. Current local storage uses generated storage keys and never derives filesystem paths from user filenames. Video and analysis-job queries are scoped to the authenticated owner. Analysis jobs are created as pending records; no worker or analysis execution is included.
 
 ## Future extension guidance
 

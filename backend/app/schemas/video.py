@@ -15,6 +15,8 @@ class VideoCreate(BaseModel):
     height: int | None = Field(default=None, gt=0)
     fps: float | None = Field(default=None, gt=0)
     aspect_ratio: float | None = Field(default=None, gt=0)
+    video_codec: str | None = Field(default=None, min_length=1, max_length=100)
+    has_audio: bool | None = None
     target_platform: str = Field(min_length=1, max_length=100)
     content_category: str = Field(min_length=1, max_length=100)
 
@@ -32,6 +34,8 @@ class VideoResponse(BaseModel):
     height: int | None
     fps: float | None
     aspect_ratio: float | None
+    video_codec: str | None
+    has_audio: bool | None
     target_platform: str
     content_category: str
     status: VideoStatus

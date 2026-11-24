@@ -1,14 +1,47 @@
 import os
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Generator
+from pathlib import Path
 from uuid import uuid4
 
+import httpx
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.schema import CreateSchema, DropSchema
 
+from app.core.config import settings
 from app.database.base import Base
+from app.database.session import get_db
+from app.main import app as fastapi_app
 import app.models  # noqa: F401
+
+
+@pytest.fixture
+async def video_integration_client(
+    integration_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> AsyncGenerator[httpx.AsyncClient, None]:
+    monkeypatch.setattr(
+        settings,
+        "secret_key",
+        SecretStr("video-integration-jwt-key-with-32-bytes"),
+    )
+    monkeypatch.setattr(settings, "storage_local_path", tmp_path / "storage")
+
+    def override_get_db() -> Generator[Session, None, None]:
+        yield integration_session
+
+    fastapi_app.dependency_overrides[get_db] = override_get_db
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=fastapi_app),
+            base_url="http://testserver",
+        ) as client:
+            yield client
+    finally:
+        fastapi_app.dependency_overrides.pop(get_db, None)
 
 
 @pytest.fixture

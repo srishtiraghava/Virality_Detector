@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.models.analysis_job import AnalysisJob
 from app.models.enums import AnalysisJobStatus
+from app.models.video import Video
 from app.schemas.analysis_job import AnalysisJobCreate, AnalysisJobStatusUpdate
 
 _ALLOWED_TRANSITIONS = {
@@ -30,6 +31,19 @@ def create_analysis_job(session: Session, job_data: AnalysisJobCreate) -> Analys
 
 def get_analysis_job_by_id(session: Session, job_id: UUID) -> AnalysisJob | None:
     return session.get(AnalysisJob, job_id)
+
+
+def get_analysis_job_for_user(
+    session: Session,
+    user_id: UUID,
+    job_id: UUID,
+) -> AnalysisJob | None:
+    statement = (
+        select(AnalysisJob)
+        .join(Video, AnalysisJob.video_id == Video.id)
+        .where(AnalysisJob.id == job_id, Video.user_id == user_id)
+    )
+    return session.scalar(statement)
 
 
 def update_analysis_job(
