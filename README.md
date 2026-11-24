@@ -1,11 +1,11 @@
 # ViralScope AI
 
-ViralScope AI is the foundation for a multimodal video intelligence and virality-prediction platform. This initial project establishes a modular monolith, API and database foundations, local development services, and tests. Video processing, machine learning, authentication, and product features are intentionally not implemented.
+ViralScope AI is a modular-monolith foundation for a multimodal video intelligence and virality-prediction platform. The backend includes PostgreSQL persistence foundations and email/password authentication with Argon2id password hashing and signed JWT access tokens. Video processing, machine learning, and product features are not implemented.
 
 ## Architecture
 
 - **Backend:** Python 3.11, FastAPI, Pydantic v2, and SQLAlchemy 2.0.
-- **Persistence:** PostgreSQL, configured through environment variables and managed with Alembic. Initial user, video, and analysis-job models and a review-pending migration are included.
+- **Persistence:** PostgreSQL, configured through environment variables and managed with Alembic. The initial user, video, and analysis-job migration is applied.
 - **Local infrastructure:** Docker Compose provides PostgreSQL and Redis. Redis is available for future background processing; no worker is included.
 - **Frontend:** `frontend/` is reserved for a future React, TypeScript, and Vite application.
 - **Research and artifacts:** `research/` and `ml_artifacts/` keep future experiments and generated model files separate from application code.
@@ -37,7 +37,7 @@ Edit `.env` before starting local infrastructure. Replace the placeholder userna
 DATABASE_URL=postgresql+psycopg://<your-user>:<your-password>@127.0.0.1:5433/viralscope
 ```
 
-Use URL-encoded characters if the database password contains reserved URL characters. `SECRET_KEY` is not used by this foundation; set a securely generated value before introducing features that need it.
+Use URL-encoded characters if the database password contains reserved URL characters. Set `SECRET_KEY` to a securely generated value of at least 32 bytes; it signs access tokens. `ACCESS_TOKEN_EXPIRE_MINUTES` controls the access-token lifetime (default: 30 minutes).
 
 If PowerShell blocks activation, allow scripts for the current process and activate again:
 
@@ -59,6 +59,30 @@ The API is available at `http://127.0.0.1:8000`. Interactive API documentation i
 - `GET /` returns basic application information.
 - `GET /api/v1/health` reports application status, version, and environment without requiring a database connection.
 - `GET /api/v1/health/database` checks PostgreSQL and returns HTTP 503 when it is unavailable.
+- `POST /api/v1/auth/register` creates an account.
+- `POST /api/v1/auth/login` verifies credentials and returns a bearer access token.
+- `GET /api/v1/auth/me` returns the authenticated user's safe profile.
+
+Example PowerShell authentication flow:
+
+```powershell
+$register = @{
+    email = "you@example.com"
+    password = "<your-password>"
+    full_name = "Your Name"
+} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/auth/register `
+    -ContentType "application/json" -Body $register
+
+$login = @{
+    email = "you@example.com"
+    password = "<your-password>"
+} | ConvertTo-Json
+$token = (Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/auth/login `
+    -ContentType "application/json" -Body $login).access_token
+Invoke-RestMethod -Uri http://127.0.0.1:8000/api/v1/auth/me `
+    -Headers @{ Authorization = "Bearer $token" }
+```
 
 ## PostgreSQL and Redis with Docker Compose
 
@@ -84,10 +108,10 @@ python -m pytest tests
 Pop-Location
 ```
 
-The initial tests use FastAPI's in-process test client and do not require PostgreSQL or Redis.
+Unit tests use FastAPI's in-process client and SQLite. PostgreSQL integration tests require an explicit `TEST_DATABASE_URL` and use a temporary isolated schema.
 
 ## Database migrations
 
-The initial migration creates `users`, `videos`, and `analysis_jobs`. It has been generated but intentionally not applied; inspect `backend\alembic\versions\` and approve it before running `python -m alembic upgrade head` from `backend\`.
+The initial migration creates `users`, `videos`, and `analysis_jobs` and is applied at revision `009dcf5dec6b`. For future revisions, inspect the generated migration before applying it with `python -m alembic upgrade head` from `backend\`.
 
 PostgreSQL integration tests require an explicit `TEST_DATABASE_URL` and create a unique temporary schema that is dropped after each test. Unit tests use in-memory SQLite and do not require Docker.

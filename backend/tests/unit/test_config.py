@@ -13,6 +13,7 @@ def test_settings_load_from_environment(monkeypatch: pytest.MonkeyPatch) -> None
         "postgresql+psycopg://test-user:test-password@localhost:5432/test_db",
     )
     monkeypatch.setenv("SECRET_KEY", "test-only-secret")
+    monkeypatch.setenv("ACCESS_TOKEN_EXPIRE_MINUTES", "45")
     monkeypatch.setenv("CORS_ORIGINS", "http://localhost:5173,https://example.test")
     monkeypatch.setenv("MAX_UPLOAD_SIZE_MB", "42")
     monkeypatch.setenv("STORAGE_BACKEND", "test-storage")
@@ -25,6 +26,7 @@ def test_settings_load_from_environment(monkeypatch: pytest.MonkeyPatch) -> None
     assert config.debug is True
     assert config.database_url.endswith("/test_db")
     assert config.secret_key == SecretStr("test-only-secret")
+    assert config.access_token_expire_minutes == 45
     assert config.cors_origins == [
         "http://localhost:5173",
         "https://example.test",
