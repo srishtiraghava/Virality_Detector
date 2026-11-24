@@ -7,9 +7,9 @@ ViralScope AI starts as a modular monolith: one deployable backend with explicit
 - `backend/app/api/v1/` — versioned HTTP routes and router composition.
 - `backend/app/core/` — application configuration, logging, and cross-cutting concerns.
 - `backend/app/database/` — SQLAlchemy declarative base, engine, session factory, and request dependency.
-- `backend/app/models/` — SQLAlchemy persistence models. No application tables are defined yet.
-- `backend/app/schemas/` — Pydantic request and response contracts.
-- `backend/app/repositories/` — future persistence/query operations, separate from HTTP and business logic.
+- `backend/app/models/` — SQLAlchemy persistence models for users, videos, and analysis jobs.
+- `backend/app/schemas/` — Pydantic request, response, and job status contracts.
+- `backend/app/repositories/` — SQLAlchemy persistence operations, including owner-scoped video access and analysis job lifecycle updates.
 - `backend/app/services/` — future application services, grouped by domain (`upload`, `video`, `audio`, `visual`, `transcript`, `features`, `prediction`, and `recommendations`).
 - `backend/app/ml/` — future preprocessing, training, inference, evaluation, calibration, and explainability code; no ML implementation is included.
 - `backend/app/workers/` — reserved for future background jobs.
@@ -27,4 +27,4 @@ FastAPI routes live under `/api/v1`. Configuration is loaded centrally with `pyd
 
 ## Future extension guidance
 
-Add domain behavior to services, persistence operations to repositories, and wire new HTTP endpoints through the versioned API router. Add SQLAlchemy models and explicit Alembic revisions only when persistent application entities are designed. Keep ML dependencies and generated artifacts out of the web request path unless a later, deliberate deployment design requires otherwise.
+Add domain behavior to services, persistence operations to repositories, and wire new HTTP endpoints through the versioned API router. The initial `User`, `Video`, and `AnalysisJob` models use UUID identifiers and UTC timestamps. A video can retain multiple analysis-job records; creating another job does not overwrite prior job history. PostgreSQL integration tests require an explicit `TEST_DATABASE_URL` and use a temporary isolated schema, while unit tests use SQLite in memory. Keep ML dependencies and generated artifacts out of the web request path unless a later, deliberate deployment design requires otherwise.

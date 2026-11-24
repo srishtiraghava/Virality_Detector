@@ -5,7 +5,7 @@ ViralScope AI is the foundation for a multimodal video intelligence and virality
 ## Architecture
 
 - **Backend:** Python 3.11, FastAPI, Pydantic v2, and SQLAlchemy 2.0.
-- **Persistence:** PostgreSQL, configured through environment variables and managed with Alembic. No application tables or migrations exist yet.
+- **Persistence:** PostgreSQL, configured through environment variables and managed with Alembic. Initial user, video, and analysis-job models and a review-pending migration are included.
 - **Local infrastructure:** Docker Compose provides PostgreSQL and Redis. Redis is available for future background processing; no worker is included.
 - **Frontend:** `frontend/` is reserved for a future React, TypeScript, and Vite application.
 - **Research and artifacts:** `research/` and `ml_artifacts/` keep future experiments and generated model files separate from application code.
@@ -88,4 +88,6 @@ The initial tests use FastAPI's in-process test client and do not require Postgr
 
 ## Database migrations
 
-Alembic is configured, but there are no application tables or migrations yet. Once models and migrations are added, run Alembic commands from `backend\` so `alembic.ini` and the script directory resolve correctly.
+The initial migration creates `users`, `videos`, and `analysis_jobs`. It has been generated but intentionally not applied; inspect `backend\alembic\versions\` and approve it before running `python -m alembic upgrade head` from `backend\`.
+
+PostgreSQL integration tests require an explicit `TEST_DATABASE_URL` and create a unique temporary schema that is dropped after each test. Unit tests use in-memory SQLite and do not require Docker.
