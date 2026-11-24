@@ -2,10 +2,11 @@ from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import CheckConstraint
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import AnalysisJob, AnalysisJobStatus, User, Video
+from app.models import AnalysisJob, AnalysisJobStatus, User, Video, VideoStatus
 from app.repositories.analysis_jobs import (
     create_analysis_job,
     get_analysis_job_by_id,
@@ -59,6 +60,7 @@ def test_models_relationships_and_user_response_excludes_password(
 
     assert user.videos == [video]
     assert video.user is user
+    assert video.status == VideoStatus.PENDING
     assert set(video.analysis_jobs) == {first_job, second_job}
     assert first_job.video is video
     assert user.created_at is not None
@@ -197,3 +199,27 @@ def test_database_constraints_reject_invalid_progress(db_session: Session) -> No
     with pytest.raises(IntegrityError):
         db_session.flush()
     db_session.rollback()
+
+
+def test_video_rejects_empty_file_size() -> None:
+    with pytest.raises(ValidationError):
+        VideoCreate(
+            original_filename="empty.mp4",
+            storage_key="videos/empty.mp4",
+            file_size=0,
+            target_platform="test",
+            content_category="test",
+        )
+
+
+def test_video_model_status_and_file_size_constraints() -> None:
+    video_table = Video.__table__
+    constraints = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in video_table.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert video_table.c.status.type.enums == ["pending", "available", "failed"]
+    assert "status IN" in constraints["ck_videos_video_status"]
+    assert constraints["ck_videos_file_size_positive"] == "file_size > 0"

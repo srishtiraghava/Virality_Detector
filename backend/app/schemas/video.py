@@ -3,11 +3,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.models.enums import VideoStatus
+
 
 class VideoCreate(BaseModel):
     original_filename: str = Field(min_length=1, max_length=255)
     storage_key: str = Field(min_length=1, max_length=1024)
-    file_size: int = Field(ge=0)
+    file_size: int = Field(gt=0)
     duration: float | None = Field(default=None, gt=0)
     width: int | None = Field(default=None, gt=0)
     height: int | None = Field(default=None, gt=0)
@@ -32,6 +34,6 @@ class VideoResponse(BaseModel):
     aspect_ratio: float | None
     target_platform: str
     content_category: str
-    status: str
+    status: VideoStatus
     created_at: datetime
     updated_at: datetime

@@ -7,3 +7,9 @@ class AnalysisJobStatus(str, Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class VideoStatus(str, Enum):
+    PENDING = "pending"
+    AVAILABLE = "available"
+    FAILED = "failed"
