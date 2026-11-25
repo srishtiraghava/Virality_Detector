@@ -26,6 +26,8 @@ class StorageBackend(Protocol):
 
     def stage_delete(self, storage_key: str) -> StagedDeletion: ...
 
+    def path_for_key(self, storage_key: str) -> Path: ...
+
 
 class _LocalStagedDeletion:
     def __init__(self, original_path: Path, staged_path: Path | None) -> None:
@@ -79,6 +81,9 @@ class LocalFilesystemStorage:
         except OSError as exc:
             raise StorageError("Unable to stage media deletion") from exc
         return _LocalStagedDeletion(original_path, trash_path)
+
+    def path_for_key(self, storage_key: str) -> Path:
+        return self._resolve_key(storage_key)
 
     def _resolve_key(self, storage_key: str) -> Path:
         key_path = PurePosixPath(storage_key)

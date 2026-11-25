@@ -14,7 +14,7 @@ ViralScope AI starts as a modular monolith: one deployable backend with explicit
 - `backend/app/services/video/` — FFprobe metadata extraction and video lifecycle orchestration.
 - `backend/app/services/` — other future application services, grouped by domain (`audio`, `visual`, `transcript`, `features`, `prediction`, and `recommendations`).
 - `backend/app/ml/` — future preprocessing, training, inference, evaluation, calibration, and explainability code; no ML implementation is included.
-- `backend/app/workers/` — reserved for future background jobs.
+- `backend/app/workers/` — Celery application, task definitions, and per-task database session lifecycle.
 - `backend/app/utils/` — small shared utilities that do not belong to a domain module.
 - `backend/tests/` — unit and integration test suites. The initial API tests do not require external services.
 - `backend/alembic/` — Alembic environment and revision scripts.
@@ -25,9 +25,11 @@ ViralScope AI starts as a modular monolith: one deployable backend with explicit
 
 ## Runtime boundaries
 
-FastAPI routes live under `/api/v1`. Configuration is loaded centrally with `pydantic-settings`; secrets are not logged. The SQLAlchemy engine is created without opening a database connection, and connections are made only when a session or the database health check is used. PostgreSQL is the configured database; Redis is provisioned for future local development but is not yet used by the application.
+FastAPI routes live under `/api/v1`. Configuration is loaded centrally with `pydantic-settings`; secrets are not logged. The SQLAlchemy engine is created without opening a database connection, and connections are made only when a session or the database health check is used. PostgreSQL is the configured database. Redis at host port 6380 is the Celery broker and result backend for local development.
 
-Video uploads require the existing bearer-token dependency. The upload service streams request data through a bounded temporary file, validates the container and video stream with FFprobe, then stores it through the storage interface. Current local storage uses generated storage keys and never derives filesystem paths from user filenames. Video and analysis-job queries are scoped to the authenticated owner. Analysis jobs are created as pending records; no worker or analysis execution is included.
+Video uploads require the existing bearer-token dependency. The upload service streams request data through a bounded temporary file, validates the container and video stream with FFprobe, then stores it through the storage interface. Current local storage uses generated storage keys and never derives filesystem paths from user filenames. Video and analysis-job queries are scoped to the authenticated owner. Analysis requests commit a queued database record before dispatching a Celery task. Workers open and close their own SQLAlchemy session, lock the job row while checking its state, and ignore duplicate deliveries after the job leaves queued. Dispatch failures persist a sanitized failed state and return an explicit HTTP 503; worker errors are stored in the job row. The explicit `run_analysis_pipeline` boundary raises an unavailable error until the real multimodal pipeline is built, so jobs fail honestly instead of claiming fabricated results.
+
+Celery uses JSON-only messages and Redis databases 0 and 1 for broker and result storage by default. Windows local development uses the Celery solo pool. Celery/Redis results are operational metadata; PostgreSQL remains the source of truth for job status and error messages. No database migration is required for this worker milestone.
 
 ## Future extension guidance
 

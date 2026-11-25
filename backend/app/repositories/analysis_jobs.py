@@ -11,7 +11,10 @@ from app.schemas.analysis_job import AnalysisJobCreate, AnalysisJobStatusUpdate
 
 _ALLOWED_TRANSITIONS = {
     AnalysisJobStatus.PENDING: {AnalysisJobStatus.QUEUED},
-    AnalysisJobStatus.QUEUED: {AnalysisJobStatus.PROCESSING},
+    AnalysisJobStatus.QUEUED: {
+        AnalysisJobStatus.PROCESSING,
+        AnalysisJobStatus.FAILED,
+    },
     AnalysisJobStatus.PROCESSING: {
         AnalysisJobStatus.COMPLETED,
         AnalysisJobStatus.FAILED,
@@ -19,6 +22,37 @@ _ALLOWED_TRANSITIONS = {
     AnalysisJobStatus.COMPLETED: set(),
     AnalysisJobStatus.FAILED: set(),
 }
+
+
+def apply_analysis_job_update(
+    job: AnalysisJob,
+    update: AnalysisJobStatusUpdate,
+) -> None:
+    new_status = update.status
+    if new_status is not None and new_status != job.status:
+        if new_status not in _ALLOWED_TRANSITIONS[job.status]:
+            raise ValueError(
+                f"Invalid analysis job transition: "
+                f"{job.status.value} -> {new_status.value}"
+            )
+
+    if new_status == AnalysisJobStatus.COMPLETED and update.progress not in (None, 100):
+        raise ValueError("A completed analysis job must have progress 100")
+
+    now = datetime.now(UTC)
+    if new_status is not None:
+        job.status = new_status
+        if new_status == AnalysisJobStatus.PROCESSING and job.started_at is None:
+            job.started_at = now
+        if new_status in (AnalysisJobStatus.COMPLETED, AnalysisJobStatus.FAILED):
+            job.completed_at = now
+        if new_status == AnalysisJobStatus.COMPLETED:
+            job.progress = 100
+
+    if update.progress is not None:
+        job.progress = update.progress
+    if update.error_message is not None:
+        job.error_message = update.error_message
 
 
 def create_analysis_job(session: Session, job_data: AnalysisJobCreate) -> AnalysisJob:
@@ -55,32 +89,7 @@ def update_analysis_job(
     if job is None:
         return None
 
-    new_status = update.status
-    if new_status is not None and new_status != job.status:
-        if new_status not in _ALLOWED_TRANSITIONS[job.status]:
-            raise ValueError(
-                f"Invalid analysis job transition: "
-                f"{job.status.value} -> {new_status.value}"
-            )
-
-    if new_status == AnalysisJobStatus.COMPLETED and update.progress not in (None, 100):
-        raise ValueError("A completed analysis job must have progress 100")
-
-    now = datetime.now(UTC)
-    if new_status is not None:
-        job.status = new_status
-        if new_status == AnalysisJobStatus.PROCESSING and job.started_at is None:
-            job.started_at = now
-        if new_status in (AnalysisJobStatus.COMPLETED, AnalysisJobStatus.FAILED):
-            job.completed_at = now
-        if new_status == AnalysisJobStatus.COMPLETED:
-            job.progress = 100
-
-    if update.progress is not None:
-        job.progress = update.progress
-    if update.error_message is not None:
-        job.error_message = update.error_message
-
+    apply_analysis_job_update(job, update)
     session.commit()
     session.refresh(job)
     return job

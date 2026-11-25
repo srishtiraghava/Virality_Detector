@@ -4,6 +4,7 @@ from uuid import UUID
 
 import httpx
 import pytest
+from kombu.exceptions import OperationalError as KombuOperationalError
 from pydantic import SecretStr
 from sqlalchemy.exc import OperationalError
 from sqlalchemy import select
@@ -12,13 +13,15 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.security import create_access_token, hash_password
 from app.main import app
-from app.models.enums import VideoStatus
+from app.models.analysis_job import AnalysisJob
+from app.models.enums import AnalysisJobStatus, VideoStatus
 from app.models.user import User
 from app.models.video import Video
 from app.repositories.users import create_user
 from app.repositories.videos import create_video
 from app.schemas.user import UserCreate
 from app.schemas.video import VideoCreate
+from app.services import analysis_queue
 from app.services.upload.storage import (
     LocalFilesystemStorage,
     StagedDeletion,
@@ -44,6 +47,7 @@ def configured_video_user(
 ) -> AuthenticatedVideoUser:
     monkeypatch.setattr(settings, "secret_key", SecretStr(_TEST_SECRET))
     monkeypatch.setattr(settings, "storage_local_path", tmp_path / "storage")
+    monkeypatch.setattr(analysis_queue, "dispatch_analysis_job", lambda job_id: None)
     user = create_user(
         db_session,
         UserCreate(email="video-owner@example.com", password="integration-password"),
@@ -282,7 +286,7 @@ async def test_video_ownership_analysis_jobs_and_deletion(
     assert first_job.status_code == 201
     assert second_job.status_code == 201
     assert first_job.json()["id"] != second_job.json()["id"]
-    assert first_job.json()["status"] == "pending"
+    assert first_job.json()["status"] == "queued"
     assert first_job.json()["progress"] == 0
 
     job_id = first_job.json()["id"]
@@ -309,6 +313,33 @@ async def test_video_ownership_analysis_jobs_and_deletion(
     assert own_delete.status_code == 204
     assert not own_file.exists()
     assert db_session.get(Video, own_video.id) is None
+
+
+@pytest.mark.anyio
+async def test_analysis_dispatch_failure_returns_job_id_and_persists_failed_state(
+    client: httpx.AsyncClient,
+    configured_video_user: AuthenticatedVideoUser,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = configured_video_user.user
+    video = _create_video(db_session, user.id, "dispatch-failure.mp4")
+
+    def fail_dispatch(job_id: UUID) -> None:
+        raise KombuOperationalError("broker unavailable")
+
+    monkeypatch.setattr(analysis_queue, "dispatch_analysis_job", fail_dispatch)
+    response = await client.post(
+        f"/api/v1/videos/{video.id}/analyze",
+        headers=configured_video_user.headers,
+    )
+
+    assert response.status_code == 503
+    job_id = UUID(response.json()["detail"]["job_id"])
+    job = db_session.get(AnalysisJob, job_id)
+    assert job is not None
+    assert job.status == AnalysisJobStatus.FAILED
+    assert job.error_message == "Analysis task could not be dispatched"
 
 
 def test_video_delete_restores_file_when_database_delete_fails(

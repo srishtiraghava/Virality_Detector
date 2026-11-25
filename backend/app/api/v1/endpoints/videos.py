@@ -10,9 +10,8 @@ from app.database.session import get_db
 from app.models.enums import VideoStatus
 from app.models.user import User
 from app.models.video import Video
-from app.repositories.analysis_jobs import create_analysis_job
 from app.repositories.videos import get_video_by_id, list_videos
-from app.schemas.analysis_job import AnalysisJobCreate, AnalysisJobResponse
+from app.schemas.analysis_job import AnalysisJobResponse
 from app.schemas.video import VideoResponse
 from app.services.upload.service import (
     EmptyVideoError,
@@ -28,6 +27,7 @@ from app.services.upload.storage import (
 )
 from app.services.video.metadata import MediaToolUnavailable
 from app.services.video.service import delete_owned_video
+from app.services.analysis_queue import AnalysisDispatchError, enqueue_analysis_job
 
 router = APIRouter()
 DatabaseSession = Annotated[Session, Depends(get_db)]
@@ -146,5 +146,14 @@ def create_video_analysis_job(
             status_code=409,
             detail="Video is not available for analysis",
         )
-    job = create_analysis_job(session, AnalysisJobCreate(video_id=video.id))
+    try:
+        job = enqueue_analysis_job(session, video.id)
+    except AnalysisDispatchError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Analysis job could not be dispatched",
+                "job_id": str(exc.job_id),
+            },
+        ) from None
     return AnalysisJobResponse.model_validate(job)

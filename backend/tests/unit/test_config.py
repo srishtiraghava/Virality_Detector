@@ -14,6 +14,8 @@ def test_settings_load_from_environment(monkeypatch: pytest.MonkeyPatch) -> None
     )
     monkeypatch.setenv("SECRET_KEY", "test-only-secret")
     monkeypatch.setenv("ACCESS_TOKEN_EXPIRE_MINUTES", "45")
+    monkeypatch.setenv("CELERY_BROKER_URL", "redis://127.0.0.1:6380/4")
+    monkeypatch.setenv("CELERY_RESULT_BACKEND", "redis://127.0.0.1:6380/5")
     monkeypatch.setenv("CORS_ORIGINS", "http://localhost:5173,https://example.test")
     monkeypatch.setenv("MAX_UPLOAD_SIZE_MB", "42")
     monkeypatch.setenv("STORAGE_BACKEND", "test-storage")
@@ -27,6 +29,8 @@ def test_settings_load_from_environment(monkeypatch: pytest.MonkeyPatch) -> None
     assert config.database_url.endswith("/test_db")
     assert config.secret_key == SecretStr("test-only-secret")
     assert config.access_token_expire_minutes == 45
+    assert config.celery_broker_url == "redis://127.0.0.1:6380/4"
+    assert config.celery_result_backend == "redis://127.0.0.1:6380/5"
     assert config.cors_origins == [
         "http://localhost:5173",
         "https://example.test",
@@ -34,3 +38,10 @@ def test_settings_load_from_environment(monkeypatch: pytest.MonkeyPatch) -> None
     assert config.max_upload_size_mb == 42
     assert config.storage_backend == "test-storage"
     assert str(config.storage_local_path) == "test-storage"
+
+
+def test_settings_default_celery_urls_are_local_redis() -> None:
+    config = Settings(_env_file=None)
+
+    assert config.celery_broker_url == "redis://127.0.0.1:6380/0"
+    assert config.celery_result_backend == "redis://127.0.0.1:6380/1"

@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://localhost/viralscope"
     secret_key: SecretStr = Field(default=SecretStr(""), repr=False)
     access_token_expire_minutes: int = Field(default=30, gt=0)
+    celery_broker_url: str = "redis://127.0.0.1:6380/0"
+    celery_result_backend: str = "redis://127.0.0.1:6380/1"
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:5173"]
     )

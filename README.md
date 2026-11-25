@@ -6,7 +6,7 @@ ViralScope AI is a modular-monolith foundation for a multimodal video intelligen
 
 - **Backend:** Python 3.11, FastAPI, Pydantic v2, and SQLAlchemy 2.0.
 - **Persistence:** PostgreSQL, configured through environment variables and managed with Alembic. The initial user, video, and analysis-job migration is applied.
-- **Local infrastructure:** Docker Compose provides PostgreSQL and Redis. Redis is available for future background processing; no worker is included.
+- **Local infrastructure:** Docker Compose provides PostgreSQL and Redis. Celery workers use Redis for task transport and result storage.
 - **Frontend:** `frontend/` is reserved for a future React, TypeScript, and Vite application.
 - **Research and artifacts:** `research/` and `ml_artifacts/` keep future experiments and generated model files separate from application code.
 
@@ -66,7 +66,7 @@ The API is available at `http://127.0.0.1:8000`. Interactive API documentation i
 - `POST /api/v1/videos/upload` validates and stores an authenticated user's video.
 - `GET /api/v1/videos` and `GET /api/v1/videos/{video_id}` list or retrieve only the authenticated user's videos.
 - `DELETE /api/v1/videos/{video_id}` removes an owned video and its local media file.
-- `POST /api/v1/videos/{video_id}/analyze` creates a pending analysis job; it does not run analysis.
+- `POST /api/v1/videos/{video_id}/analyze` persists a queued analysis job and dispatches it to Celery; it does not run analysis in the API process.
 - `GET /api/v1/jobs/{job_id}` retrieves a job only when it belongs to the authenticated user.
 
 Uploads accept MP4, MOV, M4V, WebM, and MKV containers with matching MIME types. FFprobe verifies the actual container and video stream before a record is marked available. The maximum upload size is controlled by `MAX_UPLOAD_SIZE_MB`; local files are stored under `STORAGE_LOCAL_PATH`.
@@ -112,7 +112,38 @@ docker compose ps
 docker compose down
 ```
 
-PostgreSQL data persists in the `postgres_data` named volume. Compose health checks report when PostgreSQL and Redis are ready. The API is run separately above and is not included as a Compose service.
+PostgreSQL data persists in the `postgres_data` named volume. Compose health checks report when PostgreSQL and Redis are ready. Redis is published on host port 6380; the API and worker run separately from Compose.
+
+## Background analysis jobs
+
+The API persists each analysis job as `queued` before publishing its Celery task. If dispatch fails, it persists a sanitized `failed` status and returns HTTP 503 with the job ID so the failure is visible. Workers claim queued jobs under a PostgreSQL row lock; duplicate deliveries of a non-queued job are ignored. Worker failures are rolled back and each task owns and closes its database session.
+
+The actual multimodal pipeline is deliberately not implemented. A worker validates that the job, owner, video, and local media exist, transitions the job through `processing`, then records `failed` with the explicit message that the pipeline is not implemented. It never fabricates analysis output or marks a job completed.
+
+The defaults use the existing Redis port: broker `redis://127.0.0.1:6380/0`, results `redis://127.0.0.1:6380/1`. Override these through `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND` for other environments.
+
+Start Redis using the existing Compose service, without changing ports:
+
+```powershell
+docker compose up -d redis
+docker compose ps redis
+```
+
+In another PowerShell window, start FastAPI as shown above. Start a Windows development worker using Celery's solo pool:
+
+```powershell
+Push-Location backend
+python -m celery -A app.workers.celery_app:celery_app worker --pool=solo --loglevel=INFO
+```
+
+In another terminal, from `backend\`, publish and inspect an operational worker check:
+
+```powershell
+$taskId = python -m celery -A app.workers.celery_app:celery_app call app.workers.tasks.healthcheck
+python -m celery -A app.workers.celery_app:celery_app result $taskId
+```
+
+The `healthcheck` task verifies queue delivery only. Task state and failure messages for analysis jobs are persisted in PostgreSQL; Celery's Redis result backend is for task execution results, not the source of truth for job state.
 
 To delete the local database volume as well as stop the services, run `docker compose down --volumes`; this permanently deletes the local database data.
 

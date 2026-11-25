@@ -14,6 +14,7 @@ from app.core.config import settings
 from app.database.base import Base
 from app.database.session import get_db
 from app.main import app as fastapi_app
+from app.services import analysis_queue
 import app.models  # noqa: F401
 
 
@@ -29,6 +30,7 @@ async def video_integration_client(
         SecretStr("video-integration-jwt-key-with-32-bytes"),
     )
     monkeypatch.setattr(settings, "storage_local_path", tmp_path / "storage")
+    monkeypatch.setattr(analysis_queue, "dispatch_analysis_job", lambda job_id: None)
 
     def override_get_db() -> Generator[Session, None, None]:
         yield integration_session

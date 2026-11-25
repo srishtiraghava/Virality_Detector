@@ -94,7 +94,7 @@ async def test_postgresql_video_upload_jobs_ownership_and_deletion(
         headers=other_headers,
     )
     assert own_job.status_code == 200
-    assert own_job.json()["status"] == "pending"
+    assert own_job.json()["status"] == "queued"
     assert foreign_job.status_code == 404
 
     deletion = await video_integration_client.delete(
