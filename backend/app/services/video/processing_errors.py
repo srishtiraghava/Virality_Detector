@@ -20,3 +20,9 @@ class AudioExtractionError(VideoProcessingError):
 
 class TranscriptionError(VideoProcessingError):
     pass
+
+
+class VoiceActivityDetectionError(VideoProcessingError):
+    def __init__(self, message: str, *, reason_code: str) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code

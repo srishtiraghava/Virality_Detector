@@ -39,6 +39,10 @@ def test_settings_load_from_environment(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("WHISPER_LANGUAGE", "en")
     monkeypatch.setenv("WHISPER_CPU_THREADS", "6")
     monkeypatch.setenv("WHISPER_DOWNLOAD_ROOT", "test-model-cache")
+    monkeypatch.setenv("VAD_THRESHOLD", "0.65")
+    monkeypatch.setenv("VAD_MIN_SPEECH_DURATION_MS", "75")
+    monkeypatch.setenv("VAD_MIN_SILENCE_DURATION_MS", "140")
+    monkeypatch.setenv("VAD_SPEECH_PAD_MS", "25")
 
     config = Settings(_env_file=None)
 
@@ -74,6 +78,10 @@ def test_settings_load_from_environment(monkeypatch: pytest.MonkeyPatch) -> None
     assert config.whisper_language == "en"
     assert config.whisper_cpu_threads == 6
     assert config.whisper_download_root == Path("test-model-cache")
+    assert config.vad_threshold == 0.65
+    assert config.vad_min_speech_duration_ms == 75
+    assert config.vad_min_silence_duration_ms == 140
+    assert config.vad_speech_pad_ms == 25
 
 
 def test_settings_default_celery_urls_are_local_redis() -> None:

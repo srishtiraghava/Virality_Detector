@@ -22,8 +22,15 @@ from app.schemas import AnalysisJobCreate, UserCreate, VideoCreate
 from app.schemas.video_analysis import ProcessingSummary, VideoAnalysisArtifact
 from app.services import analysis_queue
 from app.services.upload.storage import StorageBackend
-from app.services.video import analysis_pipeline, speech_transcription
-from app.services.video.processing_errors import TranscriptionError
+from app.services.video import (
+    analysis_pipeline,
+    speech_transcription,
+    voice_activity_detection,
+)
+from app.services.video.processing_errors import (
+    TranscriptionError,
+    VoiceActivityDetectionError,
+)
 from app.workers import database as worker_database
 from app.workers import tasks as worker_tasks
 from app.workers.celery_app import celery_app
@@ -79,6 +86,26 @@ def _mock_no_speech_whisper(monkeypatch: pytest.MonkeyPatch) -> None:
         speech_transcription,
         "_get_whisper_model",
         lambda: FakeWhisperModel(),
+    )
+
+
+def _mock_vad(monkeypatch: pytest.MonkeyPatch) -> None:
+    def infer(
+        _waveform: object,
+        _model: object,
+        _configuration: object,
+    ) -> list[dict[str, float]]:
+        return [{"start": 0.0, "end": 0.25}]
+
+    monkeypatch.setattr(
+        voice_activity_detection,
+        "_get_vad_model",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        voice_activity_detection,
+        "_infer_speech_timestamps",
+        infer,
     )
 
 
@@ -226,6 +253,7 @@ def test_analysis_task_runs_pipeline_and_ignores_duplicate_delivery(
     (storage_root / "available.mp4").write_bytes(sample_video_file.read_bytes())
     monkeypatch.setattr(settings, "storage_local_path", storage_root)
     _mock_no_speech_whisper(monkeypatch)
+    _mock_vad(monkeypatch)
     monkeypatch.setattr(
         worker_tasks,
         "worker_session",
@@ -266,7 +294,7 @@ def test_analysis_task_runs_pipeline_and_ignores_duplicate_delivery(
     assert refreshed_job.progress == 100
     assert refreshed_job.started_at is not None
     assert refreshed_job.completed_at is not None
-    assert progress_values[:7] == [5, 50, 80, 85, 92, 95, 100]
+    assert progress_values[:8] == [5, 50, 80, 85, 88, 92, 95, 100]
     artifact_path = (
         storage_root
         / "analysis"
@@ -285,6 +313,10 @@ def test_analysis_task_runs_pipeline_and_ignores_duplicate_delivery(
     assert artifact.audio.status == "extracted"
     assert artifact.transcription is not None
     assert artifact.transcription.status == "no_speech"
+    assert artifact.vad is not None
+    assert artifact.vad.status == "analyzed"
+    assert artifact.vad.statistics is not None
+    assert artifact.vad.statistics.speech_segment_count == 1
     assert artifact.audio.storage_path is not None
     assert (storage_root / artifact.audio.storage_path).is_file()
     assert all(
@@ -351,6 +383,7 @@ def test_analysis_task_fails_on_transcription_error_with_checkpointed_progress(
         sample_video_file.read_bytes()
     )
     monkeypatch.setattr(settings, "storage_local_path", storage_root)
+    _mock_vad(monkeypatch)
     monkeypatch.setattr(
         worker_tasks,
         "worker_session",
@@ -379,7 +412,65 @@ def test_analysis_task_fails_on_transcription_error_with_checkpointed_progress(
     }
     assert persisted_job is not None
     assert persisted_job.status == AnalysisJobStatus.FAILED
-    assert persisted_job.progress == 85
+    assert persisted_job.progress == 88
+
+
+def test_vad_failure_is_recorded_but_transcription_completes(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    sample_video_file: Path,
+) -> None:
+    _, _, job = _queued_video_job(db_session, "vad-failure.mp4")
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir(parents=True)
+    (storage_root / "vad-failure.mp4").write_bytes(sample_video_file.read_bytes())
+    monkeypatch.setattr(settings, "storage_local_path", storage_root)
+    monkeypatch.setattr(
+        worker_tasks,
+        "worker_session",
+        lambda: _use_session(db_session),
+    )
+    _mock_no_speech_whisper(monkeypatch)
+
+    def fail_vad(
+        audio_path: Path,
+        configuration: object,
+    ) -> NoReturn:
+        assert audio_path.is_file()
+        assert configuration is not None
+        raise VoiceActivityDetectionError(
+            "Silero VAD model could not be loaded",
+            reason_code="vad_model_unavailable",
+        )
+
+    monkeypatch.setattr(analysis_pipeline, "analyze_voice_activity", fail_vad)
+
+    result = worker_tasks.process_analysis_job.apply(
+        args=[str(job.id)],
+        throw=True,
+    ).get()
+
+    artifact_path = (
+        storage_root
+        / "analysis"
+        / str(job.video_id)
+        / str(job.id)
+        / "v2"
+        / "metadata.json"
+    )
+    artifact = VideoAnalysisArtifact.model_validate_json(
+        artifact_path.read_text(encoding="utf-8")
+    )
+    persisted_job = get_analysis_job_by_id(db_session, job.id)
+    assert result["status"] == "completed"
+    assert persisted_job is not None
+    assert persisted_job.status == AnalysisJobStatus.COMPLETED
+    assert artifact.vad is not None
+    assert artifact.vad.status == "unavailable"
+    assert artifact.vad.reason == "vad_model_unavailable"
+    assert artifact.transcription is not None
+    assert artifact.transcription.status == "no_speech"
 
 
 def test_analysis_task_records_sanitized_media_failure_and_progress(

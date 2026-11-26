@@ -1,6 +1,6 @@
 # ViralScope AI
 
-ViralScope AI is a modular-monolith foundation for a multimodal video intelligence and virality-prediction platform. The backend includes PostgreSQL persistence, email/password authentication, authenticated video upload and management, FFprobe metadata extraction, and a Celery pipeline for video frame extraction, scene detection, audio extraction, and speech transcription. Machine learning and recommendations are not implemented.
+ViralScope AI is a modular-monolith foundation for a multimodal video intelligence and virality-prediction platform. The backend includes PostgreSQL persistence, email/password authentication, authenticated video upload and management, FFprobe metadata extraction, and a Celery pipeline for video frame extraction, scene detection, audio extraction, speech transcription, voice activity detection, and silence analysis. Machine learning and recommendations are not implemented.
 
 ## Architecture
 
@@ -10,7 +10,7 @@ ViralScope AI is a modular-monolith foundation for a multimodal video intelligen
 - **Frontend:** `frontend/` is reserved for a future React, TypeScript, and Vite application.
 - **Research and artifacts:** `research/` and `ml_artifacts/` keep future experiments and generated model files separate from application code.
 
-The backend separates HTTP routes, configuration, database access, models, schemas, repositories, and domain services. Upload storage, FFprobe metadata extraction, video frame sampling, PySceneDetect scene detection, FFmpeg audio conversion, and faster-whisper transcription are implemented; ML subpackages remain structural only.
+The backend separates HTTP routes, configuration, database access, models, schemas, repositories, and domain services. Upload storage, FFprobe metadata extraction, video frame sampling, PySceneDetect scene detection, FFmpeg audio conversion, faster-whisper transcription, and Silero VAD are implemented; ML subpackages remain structural only.
 
 ## Prerequisites
 
@@ -20,6 +20,7 @@ The backend separates HTTP routes, configuration, database access, models, schem
 - Docker Desktop with the Docker Engine running for PostgreSQL and Redis.
 - FFmpeg tools on `PATH`: FFprobe inspects uploads and audio streams; FFmpeg generates test media and extracts analysis audio.
 - Network access on the first transcription, unless the configured faster-whisper model is already cached locally.
+- CPU-capable runtime for Silero VAD; its model file is included in the pinned Python package.
 
 ## Windows PowerShell setup
 
@@ -119,7 +120,7 @@ PostgreSQL data persists in the `postgres_data` named volume. Compose health che
 
 The API persists each analysis job as `queued` before publishing its Celery task. If dispatch fails, it persists a sanitized `failed` status and returns HTTP 503 with the job ID so the failure is visible. Workers claim queued jobs under a PostgreSQL row lock and a job-scoped advisory lock, so duplicate deliveries remain excluded while progress checkpoints are committed. Each task owns and closes its database session; processing errors persist a sanitized failure, while transient database errors retain the Celery retry policy.
 
-The current implemented stages sample and validate representative video frames, detect scene cuts with PySceneDetect's `ContentDetector`, convert an available audio stream to mono 16 kHz PCM WAV, and transcribe speech with faster-whisper. Videos without audio complete their visual analysis with audio and transcription marked `skipped`; empty recognized speech is represented as `no_speech`. The worker commits progress at stage boundaries and marks a job completed only after all applicable stages and the versioned artifact are stored. VAD, sound classification, ML inference, and recommendations remain future stages; jobs do not claim those results.
+The current implemented stages sample and validate representative video frames, detect scene cuts with PySceneDetect's `ContentDetector`, convert an available audio stream to mono 16 kHz PCM WAV, analyze speech activity and non-speech intervals with Silero VAD, and transcribe speech with faster-whisper. Videos without audio complete their visual analysis with audio, VAD, and transcription marked `skipped`; empty recognized speech is represented as `no_speech`. VAD failures are recoverable: the artifact records an `unavailable` status and reason while transcription continues independently. The worker commits progress at stage boundaries and marks a job completed only after applicable processing and the versioned artifact are stored. Sound classification, ML inference, and recommendations remain future stages; jobs do not claim those results.
 
 The defaults use the existing Redis port: broker `redis://127.0.0.1:6380/0`, results `redis://127.0.0.1:6380/1`. Override these through `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND` for other environments.
 
@@ -146,10 +147,24 @@ Set these options in `.env` to control frame sampling, scene detection, audio ex
 | `WHISPER_LANGUAGE` | unset | Optional language-code override; unset enables automatic language detection. |
 | `WHISPER_CPU_THREADS` | `4` | CPU threads used by the model. |
 | `WHISPER_DOWNLOAD_ROOT` | unset | Optional model-cache directory; otherwise faster-whisper uses its default cache. |
+| `VAD_THRESHOLD` | `0.5` | Silero speech-probability threshold. |
+| `VAD_MIN_SPEECH_DURATION_MS` | `100` | Minimum detected speech duration; lower values retain short utterances. |
+| `VAD_MIN_SILENCE_DURATION_MS` | `100` | Silence duration required before Silero splits adjacent speech intervals. |
+| `VAD_SPEECH_PAD_MS` | `30` | Context padding added around detected speech boundaries. |
 
-Each job writes JPEGs named `frame_000001.jpg`, etc., and `audio/audio.wav` when audio is present, under `analysis/<video-id>/<job-id>/v2/`. Its `metadata.json` contains `schema_version: 2`, frame records (`timestamp`, `storage_path`, `width`, `height`), scene records (`start_time`, `end_time`, `duration`), audio extraction status and stream metadata, transcription status, detected language when available, transcript text and timestamped segments, and processing summaries. Audio and frame files plus JSON metadata stay in the configured storage backend; media bytes and transcripts are not stored in PostgreSQL. Existing v1 frame/scene artifacts remain readable. This milestone does not require a database migration.
+Each job writes JPEGs named `frame_000001.jpg`, etc., and `audio/audio.wav` when audio is present, under `analysis/<video-id>/<job-id>/v2/`. Its `metadata.json` contains `schema_version: 2`, frame and scene records, audio extraction status and stream metadata, transcription status and timed segments, and a `vad` object with status/reason, Silero model and threshold configuration, speech segments, complementary silence intervals, aggregate duration/ratio statistics, and processing duration. Silence intervals mean audio not classified as speech; background noise may therefore be included. Audio and frame files plus JSON metadata stay in the configured storage backend; media bytes and transcripts are not stored in PostgreSQL. Existing v1 and pre-VAD v2 artifacts remain readable. This milestone does not require a database migration.
 
-The faster-whisper model loads lazily on the first audio-bearing job in each worker process and is cached for later jobs in that process; initialization is synchronized to avoid duplicate concurrent loads. Model weights are not downloaded on every task. A first run downloads the selected weights if absent from the model cache, so pre-cache the model or configure `WHISPER_DOWNLOAD_ROOT` when workers must run offline. CPU `base`/`int8` is the default local configuration; transcription can be CPU- and memory-intensive, especially with larger models or multiple worker processes. Each worker process has its own cached model. Audio processing is capped by `AUDIO_MAX_DURATION_SECONDS`; FFmpeg work has explicit timeouts. Transcription does not run VAD.
+The faster-whisper model loads lazily on the first audio-bearing job in each worker process and is cached for later jobs in that process; initialization is synchronized to avoid duplicate concurrent loads. Model weights are not downloaded on every task. A first run downloads the selected weights if absent from the model cache, so pre-cache the model or configure `WHISPER_DOWNLOAD_ROOT` when workers must run offline. CPU `base`/`int8` is the default local configuration; transcription can be CPU- and memory-intensive, especially with larger models or multiple worker processes. Silero VAD loads lazily from the installed `silero-vad==6.2.0` package, which bundles the model file; no separate model download is needed. VAD runs on CPU using PyTorch, reuses one model per worker, and converts the bounded 16 kHz WAV to a float waveform for inference. Its memory use grows with audio duration; the existing `AUDIO_MAX_DURATION_SECONDS` limit caps the input. All VAD thresholds and minimum durations are recorded in the artifact. A VAD failure is explicitly recorded as `unavailable` and does not invalidate transcription.
+
+An optional real-model smoke test is skipped by default. From `backend\`, run it against a generated voiced waveform with the packaged model:
+
+```powershell
+$env:VIRALSCOPE_REAL_VAD_SMOKE = "1"
+python -m pytest tests\unit\test_voice_activity.py -k real_silero_model_smoke
+Remove-Item Env:VIRALSCOPE_REAL_VAD_SMOKE
+```
+
+Regular unit tests mock VAD inference and never load model weights.
 
 To run a real local transcription smoke test after an audio-bearing analysis has written a WAV artifact, from `backend\` set `$audioPath` to its `analysis\<video-id>\<job-id>\v2\audio\audio.wav` path and run:
 
@@ -197,11 +212,11 @@ Pop-Location
 
 Unit tests use FastAPI's in-process client and SQLite. PostgreSQL integration tests require an explicit `TEST_DATABASE_URL` and use a temporary isolated schema.
 
-The video and audio pipeline tests use FFmpeg to generate real short videos and exercise frame and audio extraction, timestamps, output limits, scene changes, no-audio and silent-audio cases, corrupt/missing inputs, artifact validation, mocked transcription, and the actual Celery task in eager mode:
+The video, audio, and VAD tests use generated media and exercise frame/audio extraction, speech interval normalization, silence statistics, no-audio and empty/silent-audio cases, corrupt/missing inputs, artifact validation, mocked VAD/transcription, and the actual Celery task in eager mode:
 
 ```powershell
 Push-Location backend
-python -m pytest tests\unit\test_video_analysis.py tests\unit\test_audio_processing.py tests\unit\test_workers.py
+python -m pytest tests\unit\test_video_analysis.py tests\unit\test_audio_processing.py tests\unit\test_voice_activity.py tests\unit\test_workers.py
 Pop-Location
 ```
 

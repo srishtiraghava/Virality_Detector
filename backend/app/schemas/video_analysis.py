@@ -111,6 +111,214 @@ class TranscriptionMetadata(BaseModel):
         return self
 
 
+class VoiceActivityIntervalMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start_time: float = Field(ge=0)
+    end_time: float = Field(gt=0)
+    duration: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> "VoiceActivityIntervalMetadata":
+        if self.end_time <= self.start_time:
+            raise ValueError("An interval end must follow its start")
+        if abs(self.duration - (self.end_time - self.start_time)) > 1e-6:
+            raise ValueError("Interval duration must match its time bounds")
+        return self
+
+
+class SpeechSegmentMetadata(VoiceActivityIntervalMetadata):
+    pass
+
+
+class SilenceIntervalMetadata(VoiceActivityIntervalMetadata):
+    pass
+
+
+class VADConfigurationMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model_name: Literal["silero-vad"] = "silero-vad"
+    model_version: Literal["6.2.0"] = "6.2.0"
+    device: Literal["cpu"] = "cpu"
+    sample_rate: Literal[16000] = 16000
+    threshold: float = Field(ge=0, le=1)
+    min_speech_duration_ms: int = Field(ge=0)
+    min_silence_duration_ms: int = Field(ge=0)
+    speech_pad_ms: int = Field(ge=0)
+
+
+class VADStatisticsMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    total_audio_duration_seconds: float = Field(ge=0)
+    total_speech_duration_seconds: float = Field(ge=0)
+    total_silence_duration_seconds: float = Field(ge=0)
+    speech_to_audio_ratio: float | None = Field(default=None, ge=0, le=1)
+    silence_to_audio_ratio: float | None = Field(default=None, ge=0, le=1)
+    speech_segment_count: int = Field(ge=0)
+    average_speech_segment_duration_seconds: float | None = Field(
+        default=None,
+        ge=0,
+    )
+    longest_silence_interval_seconds: float | None = Field(default=None, ge=0)
+
+
+class VoiceActivityAnalysisMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["analyzed", "skipped", "unavailable"]
+    reason: str | None = None
+    configuration: VADConfigurationMetadata
+    speech_segments: list[SpeechSegmentMetadata] = Field(default_factory=list)
+    silence_intervals: list[SilenceIntervalMetadata] = Field(default_factory=list)
+    statistics: VADStatisticsMetadata | None = None
+    processing_duration_seconds: float = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_analysis_result(self) -> "VoiceActivityAnalysisMetadata":
+        if self.status == "analyzed":
+            if self.reason is not None or self.statistics is None:
+                raise ValueError("Analyzed VAD results must include statistics")
+            if self.statistics.total_audio_duration_seconds <= 0:
+                raise ValueError("Analyzed VAD audio duration must be positive")
+            if self.statistics.speech_segment_count != len(self.speech_segments):
+                raise ValueError("Speech segment count must match detected segments")
+            _validate_vad_intervals(
+                self.speech_segments,
+                self.statistics.total_audio_duration_seconds,
+            )
+            _validate_vad_intervals(
+                self.silence_intervals,
+                self.statistics.total_audio_duration_seconds,
+            )
+            _validate_vad_coverage(
+                self.speech_segments,
+                self.silence_intervals,
+                self.statistics.total_audio_duration_seconds,
+            )
+            _validate_vad_statistics(
+                self.statistics,
+                self.speech_segments,
+                self.silence_intervals,
+            )
+        elif not self.reason or self.speech_segments or self.silence_intervals:
+            raise ValueError(
+                "Skipped or unavailable VAD must include a reason and no intervals"
+            )
+        elif self.status == "unavailable" and self.statistics is not None:
+            raise ValueError("Unavailable VAD cannot include statistics")
+        elif self.status == "skipped" and self.reason == "empty_audio":
+            if (
+                self.statistics is None
+                or self.statistics.total_audio_duration_seconds != 0
+                or self.statistics.total_speech_duration_seconds != 0
+                or self.statistics.total_silence_duration_seconds != 0
+                or self.statistics.speech_to_audio_ratio is not None
+                or self.statistics.silence_to_audio_ratio is not None
+                or self.statistics.speech_segment_count != 0
+                or self.statistics.average_speech_segment_duration_seconds is not None
+                or self.statistics.longest_silence_interval_seconds is not None
+            ):
+                raise ValueError(
+                    "Empty audio must have zero totals and undefined ratios"
+                )
+        elif self.status == "skipped" and self.statistics is not None:
+            raise ValueError("Skipped VAD cannot include statistics")
+        return self
+
+
+def _validate_vad_intervals(
+    intervals: list[VoiceActivityIntervalMetadata],
+    audio_duration: float,
+) -> None:
+    previous_end = 0.0
+    for interval in intervals:
+        if interval.end_time > audio_duration + 1e-6:
+            raise ValueError("VAD intervals must stay within the audio duration")
+        if interval.start_time < previous_end - 1e-6:
+            raise ValueError("VAD intervals must be sorted and non-overlapping")
+        previous_end = interval.end_time
+
+
+def _validate_vad_coverage(
+    speech_segments: list[SpeechSegmentMetadata],
+    silence_intervals: list[SilenceIntervalMetadata],
+    audio_duration: float,
+) -> None:
+    intervals = sorted(
+        [*speech_segments, *silence_intervals],
+        key=lambda interval: interval.start_time,
+    )
+    cursor = 0.0
+    for interval in intervals:
+        if abs(interval.start_time - cursor) > 1e-6:
+            raise ValueError("Speech and silence intervals must cover audio exactly")
+        cursor = interval.end_time
+    if abs(cursor - audio_duration) > 1e-6:
+        raise ValueError("Speech and silence intervals must cover audio exactly")
+
+
+def _validate_vad_statistics(
+    statistics: VADStatisticsMetadata,
+    speech_segments: list[SpeechSegmentMetadata],
+    silence_intervals: list[SilenceIntervalMetadata],
+) -> None:
+    speech_duration = sum(segment.duration for segment in speech_segments)
+    silence_duration = sum(interval.duration for interval in silence_intervals)
+    audio_duration = statistics.total_audio_duration_seconds
+    if abs(statistics.total_speech_duration_seconds - speech_duration) > 1e-6:
+        raise ValueError("Total speech duration must match speech segments")
+    if abs(statistics.total_silence_duration_seconds - silence_duration) > 1e-6:
+        raise ValueError("Total silence duration must match silence intervals")
+    if abs(audio_duration - speech_duration - silence_duration) > 1e-6:
+        raise ValueError("Speech and silence durations must cover the audio")
+
+    expected_speech_ratio = speech_duration / audio_duration if audio_duration else None
+    expected_silence_ratio = silence_duration / audio_duration if audio_duration else None
+    if statistics.speech_to_audio_ratio != expected_speech_ratio:
+        if (
+            statistics.speech_to_audio_ratio is None
+            or expected_speech_ratio is None
+            or abs(statistics.speech_to_audio_ratio - expected_speech_ratio) > 1e-6
+        ):
+            raise ValueError("Speech-to-audio ratio does not match durations")
+    if statistics.silence_to_audio_ratio != expected_silence_ratio:
+        if (
+            statistics.silence_to_audio_ratio is None
+            or expected_silence_ratio is None
+            or abs(statistics.silence_to_audio_ratio - expected_silence_ratio) > 1e-6
+        ):
+            raise ValueError("Silence-to-audio ratio does not match durations")
+
+    expected_average = speech_duration / len(speech_segments) if speech_segments else None
+    expected_longest = max(
+        (interval.duration for interval in silence_intervals),
+        default=None,
+    )
+    if statistics.average_speech_segment_duration_seconds != expected_average:
+        if (
+            statistics.average_speech_segment_duration_seconds is None
+            or expected_average is None
+            or abs(
+                statistics.average_speech_segment_duration_seconds
+                - expected_average
+            )
+            > 1e-6
+        ):
+            raise ValueError("Average speech duration does not match segments")
+    if statistics.longest_silence_interval_seconds != expected_longest:
+        if (
+            statistics.longest_silence_interval_seconds is None
+            or expected_longest is None
+            or abs(
+                statistics.longest_silence_interval_seconds - expected_longest
+            )
+            > 1e-6
+        ):
+            raise ValueError("Longest silence duration does not match intervals")
+
+
 class VideoAnalysisArtifact(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -120,6 +328,7 @@ class VideoAnalysisArtifact(BaseModel):
     summary: ProcessingSummary
     audio: AudioExtractionMetadata | None = None
     transcription: TranscriptionMetadata | None = None
+    vad: VoiceActivityAnalysisMetadata | None = None
 
     @model_validator(mode="after")
     def validate_summary_counts(self) -> "VideoAnalysisArtifact":

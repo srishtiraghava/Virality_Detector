@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     whisper_language: str | None = None
     whisper_cpu_threads: int = Field(default=4, ge=1, le=64)
     whisper_download_root: Path | None = None
+    vad_threshold: float = Field(default=0.5, ge=0, le=1)
+    vad_min_speech_duration_ms: int = Field(default=100, ge=0, le=60000)
+    vad_min_silence_duration_ms: int = Field(default=100, ge=0, le=60000)
+    vad_speech_pad_ms: int = Field(default=30, ge=0, le=10000)
 
     @field_validator("cors_origins", mode="before")
     @classmethod

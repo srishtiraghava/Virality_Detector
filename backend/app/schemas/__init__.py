@@ -11,9 +11,14 @@ from app.schemas.video_analysis import (
     ExtractedFrameMetadata,
     ProcessingSummary,
     SceneMetadata,
+    SilenceIntervalMetadata,
+    SpeechSegmentMetadata,
     TranscriptSegmentMetadata,
     TranscriptionMetadata,
+    VADConfigurationMetadata,
+    VADStatisticsMetadata,
     VideoAnalysisArtifact,
+    VoiceActivityAnalysisMetadata,
 )
 
 __all__ = [
@@ -25,12 +30,17 @@ __all__ = [
     "ExtractedFrameMetadata",
     "ProcessingSummary",
     "SceneMetadata",
+    "SilenceIntervalMetadata",
+    "SpeechSegmentMetadata",
     "TranscriptSegmentMetadata",
     "TranscriptionMetadata",
+    "VADConfigurationMetadata",
+    "VADStatisticsMetadata",
     "UserCreate",
     "UserLogin",
     "UserResponse",
     "VideoCreate",
     "VideoAnalysisArtifact",
     "VideoResponse",
+    "VoiceActivityAnalysisMetadata",
 ]

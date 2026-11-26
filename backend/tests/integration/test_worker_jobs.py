@@ -16,13 +16,14 @@ from app.repositories.analysis_jobs import (
 )
 from app.repositories.users import create_user
 from app.repositories.videos import create_video
-from app.services.video import speech_transcription
+from app.services.video import speech_transcription, voice_activity_detection
 from app.schemas import (
     AnalysisJobCreate,
     AnalysisJobStatusUpdate,
     UserCreate,
     VideoCreate,
 )
+from app.schemas.video_analysis import VADConfigurationMetadata
 from app.workers import tasks as worker_tasks
 
 
@@ -84,6 +85,37 @@ async def test_postgresql_worker_processes_video_and_persists_artifact(
         speech_transcription,
         "_get_whisper_model",
         lambda: FakeWhisperModel(),
+    )
+    monkeypatch.setattr(
+        voice_activity_detection,
+        "_get_vad_model",
+        lambda: object(),
+    )
+
+    def infer_speech(
+        _waveform: object,
+        _model: object,
+        _configuration: VADConfigurationMetadata,
+    ) -> list[dict[str, float]]:
+        return [{"start": 0.0, "end": 0.25}]
+
+    monkeypatch.setattr(
+        voice_activity_detection,
+        "_infer_speech_timestamps",
+        infer_speech,
+    )
+
+    def infer_speech(
+        _waveform: object,
+        _model: object,
+        _configuration: VADConfigurationMetadata,
+    ) -> list[dict[str, float]]:
+        return [{"start": 0.0, "end": 0.25}]
+
+    monkeypatch.setattr(
+        voice_activity_detection,
+        "_infer_speech_timestamps",
+        infer_speech,
     )
 
     @contextmanager
