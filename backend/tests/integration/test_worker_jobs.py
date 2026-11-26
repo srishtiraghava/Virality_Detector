@@ -24,11 +24,12 @@ from app.workers import tasks as worker_tasks
 
 
 @pytest.mark.anyio
-async def test_postgresql_worker_fails_explicitly_until_pipeline_exists(
+async def test_postgresql_worker_processes_video_and_persists_artifact(
     video_integration_client: httpx.AsyncClient,
     integration_session: Session,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    sample_video_file: Path,
 ) -> None:
     user = create_user(
         integration_session,
@@ -64,7 +65,7 @@ async def test_postgresql_worker_fails_explicitly_until_pipeline_exists(
 
     media_path = tmp_path / "storage" / storage_key
     media_path.parent.mkdir(parents=True, exist_ok=True)
-    media_path.write_bytes(b"fixture media")
+    media_path.write_bytes(sample_video_file.read_bytes())
 
     @contextmanager
     def use_isolated_session():
@@ -82,8 +83,17 @@ async def test_postgresql_worker_fails_explicitly_until_pipeline_exists(
     ).get()
 
     persisted_job = get_analysis_job_by_id(integration_session, job.id)
-    assert result["status"] == "failed"
-    assert result["message"] == "Multimodal video analysis is not implemented yet"
+    assert result["status"] == "completed"
+    assert int(result["frame_count"]) > 0
     assert persisted_job is not None
-    assert persisted_job.status == AnalysisJobStatus.FAILED
-    assert persisted_job.progress == 0
+    assert persisted_job.status == AnalysisJobStatus.COMPLETED
+    assert persisted_job.progress == 100
+    assert (
+        tmp_path
+        / "storage"
+        / "analysis"
+        / str(video.id)
+        / str(job.id)
+        / "v1"
+        / "metadata.json"
+    ).is_file()

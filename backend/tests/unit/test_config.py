@@ -20,6 +20,12 @@ def test_settings_load_from_environment(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("MAX_UPLOAD_SIZE_MB", "42")
     monkeypatch.setenv("STORAGE_BACKEND", "test-storage")
     monkeypatch.setenv("STORAGE_LOCAL_PATH", "test-storage")
+    monkeypatch.setenv("FRAME_SAMPLING_INTERVAL_SECONDS", "2.5")
+    monkeypatch.setenv("FRAME_MAX_COUNT", "12")
+    monkeypatch.setenv("FRAME_MAX_WIDTH", "640")
+    monkeypatch.setenv("FRAME_MAX_HEIGHT", "360")
+    monkeypatch.setenv("SCENE_DETECTION_THRESHOLD", "18.5")
+    monkeypatch.setenv("SCENE_DETECTION_MIN_SCENE_LEN_FRAMES", "8")
 
     config = Settings(_env_file=None)
 
@@ -38,6 +44,12 @@ def test_settings_load_from_environment(monkeypatch: pytest.MonkeyPatch) -> None
     assert config.max_upload_size_mb == 42
     assert config.storage_backend == "test-storage"
     assert str(config.storage_local_path) == "test-storage"
+    assert config.frame_sampling_interval_seconds == 2.5
+    assert config.frame_max_count == 12
+    assert config.frame_max_width == 640
+    assert config.frame_max_height == 360
+    assert config.scene_detection_threshold == 18.5
+    assert config.scene_detection_min_scene_len_frames == 8
 
 
 def test_settings_default_celery_urls_are_local_redis() -> None:

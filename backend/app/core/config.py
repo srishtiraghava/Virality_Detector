@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     max_upload_size_mb: int = Field(default=500, gt=0)
     storage_backend: str = "local"
     storage_local_path: Path = Path("storage")
+    frame_sampling_interval_seconds: float = Field(default=1.0, gt=0)
+    frame_max_count: int = Field(default=300, gt=0)
+    frame_max_width: int = Field(default=1280, gt=0)
+    frame_max_height: int = Field(default=720, gt=0)
+    scene_detection_threshold: float = Field(default=27.0, gt=0)
+    scene_detection_min_scene_len_frames: int = Field(default=15, gt=0)
 
     @field_validator("cors_origins", mode="before")
     @classmethod

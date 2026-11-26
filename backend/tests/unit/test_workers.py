@@ -1,11 +1,14 @@
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
 from celery import Celery
+from celery.exceptions import Retry
 from kombu.exceptions import OperationalError as KombuOperationalError
-from sqlalchemy import select
+from sqlalchemy import event, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -14,7 +17,9 @@ from app.repositories.analysis_jobs import create_analysis_job, get_analysis_job
 from app.repositories.users import create_user
 from app.repositories.videos import create_video
 from app.schemas import AnalysisJobCreate, UserCreate, VideoCreate
+from app.schemas.video_analysis import ProcessingSummary, VideoAnalysisArtifact
 from app.services import analysis_queue
+from app.services.upload.storage import StorageBackend
 from app.workers import database as worker_database
 from app.workers import tasks as worker_tasks
 from app.workers.celery_app import celery_app
@@ -135,7 +140,7 @@ def test_analysis_task_marks_missing_video_failed(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _, video, job = _queued_video_job(db_session, "missing-video.mp4")
+    _, _, job = _queued_video_job(db_session, "missing-video.mp4")
     original_get = db_session.get
 
     def get_model(model, identity, **kwargs):
@@ -187,15 +192,16 @@ def test_analysis_task_marks_missing_media_failed(
     assert refreshed_job.status == AnalysisJobStatus.FAILED
 
 
-def test_analysis_task_pipeline_boundary_and_duplicate_delivery(
+def test_analysis_task_runs_pipeline_and_ignores_duplicate_delivery(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    sample_video_file: Path,
 ) -> None:
     _, _, job = _queued_video_job(db_session, "available.mp4")
     storage_root = tmp_path / "storage"
-    storage_root.mkdir()
-    (storage_root / "available.mp4").write_bytes(b"media")
+    storage_root.mkdir(parents=True)
+    (storage_root / "available.mp4").write_bytes(sample_video_file.read_bytes())
     monkeypatch.setattr(settings, "storage_local_path", storage_root)
     monkeypatch.setattr(
         worker_tasks,
@@ -203,24 +209,155 @@ def test_analysis_task_pipeline_boundary_and_duplicate_delivery(
         lambda: _use_session(db_session),
     )
 
-    first = worker_tasks.process_analysis_job.apply(
-        args=[str(job.id)],
-        throw=True,
-    ).get()
+    progress_values: list[int] = []
+
+    def capture_progress(session: Session) -> None:
+        persisted_job = session.get(AnalysisJob, job.id)
+        assert persisted_job is not None
+        progress_values.append(persisted_job.progress)
+
+    event.listen(db_session, "after_commit", capture_progress)
+    try:
+        first = worker_tasks.process_analysis_job.apply(
+            args=[str(job.id)],
+            throw=True,
+        ).get()
+    finally:
+        event.remove(
+            db_session,
+            "after_commit",
+            capture_progress,
+        )
     second = worker_tasks.process_analysis_job.apply(
         args=[str(job.id)],
         throw=True,
     ).get()
 
     refreshed_job = get_analysis_job_by_id(db_session, job.id)
-    assert first["status"] == "failed"
-    assert first["message"] == "Multimodal video analysis is not implemented yet"
-    assert second == {"status": "ignored", "job_status": "failed"}
+    assert first["status"] == "completed"
+    assert int(first["frame_count"]) > 0
+    assert int(first["scene_count"]) > 0
+    assert second == {"status": "ignored", "job_status": "completed"}
     assert refreshed_job is not None
-    assert refreshed_job.status == AnalysisJobStatus.FAILED
-    assert refreshed_job.progress == 0
+    assert refreshed_job.status == AnalysisJobStatus.COMPLETED
+    assert refreshed_job.progress == 100
     assert refreshed_job.started_at is not None
     assert refreshed_job.completed_at is not None
+    assert progress_values[:5] == [5, 50, 80, 95, 100]
+    artifact_path = (
+        storage_root
+        / "analysis"
+        / str(job.video_id)
+        / str(job.id)
+        / "v1"
+        / "metadata.json"
+    )
+    artifact = VideoAnalysisArtifact.model_validate_json(
+        artifact_path.read_text(encoding="utf-8")
+    )
+    assert artifact.summary.frame_count == len(artifact.frames)
+    assert artifact.summary.scene_count == len(artifact.scenes)
+    assert all(
+        (storage_root / frame.storage_path).is_file()
+        for frame in artifact.frames
+    )
+
+
+def test_analysis_task_records_sanitized_media_failure_and_progress(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _, _, job = _queued_video_job(db_session, "corrupt.mp4")
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir()
+    (storage_root / "corrupt.mp4").write_bytes(b"not video media")
+    monkeypatch.setattr(settings, "storage_local_path", storage_root)
+    monkeypatch.setattr(
+        worker_tasks,
+        "worker_session",
+        lambda: _use_session(db_session),
+    )
+
+    result = worker_tasks.process_analysis_job.apply(
+        args=[str(job.id)],
+        throw=True,
+    ).get()
+
+    refreshed_job = get_analysis_job_by_id(db_session, job.id)
+    assert result["status"] == "failed"
+    assert "codec" in result["message"] or "decodable" in result["message"]
+    assert refreshed_job is not None
+    assert refreshed_job.status == AnalysisJobStatus.FAILED
+    assert 0 < refreshed_job.progress < 100
+
+
+def test_celery_operational_retry_resumes_processing_job(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    sample_video_file: Path,
+) -> None:
+    _, _, job = _queued_video_job(db_session, "retry.mp4")
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir()
+    (storage_root / "retry.mp4").write_bytes(sample_video_file.read_bytes())
+    monkeypatch.setattr(settings, "storage_local_path", storage_root)
+    monkeypatch.setattr(
+        worker_tasks,
+        "worker_session",
+        lambda: _use_session(db_session),
+    )
+    pipeline_attempts = 0
+
+    def fail_once_then_finish(
+        analysis_job: AnalysisJob,
+        video: Video,
+        media_path: Path,
+        storage: StorageBackend,
+        progress_callback: Callable[[int], None],
+    ) -> VideoAnalysisArtifact:
+        nonlocal pipeline_attempts
+        assert analysis_job.id == job.id
+        assert video.id == job.video_id
+        assert media_path.is_file()
+        assert storage.path_for_key("retry.mp4") == media_path
+        pipeline_attempts += 1
+        if pipeline_attempts == 1:
+            progress_callback(50)
+            raise OperationalError("test query", {}, RuntimeError("temporary"))
+        return VideoAnalysisArtifact(
+            frames=[],
+            scenes=[],
+            summary=ProcessingSummary(
+                frame_count=0,
+                scene_count=0,
+                processing_duration_seconds=0,
+            ),
+        )
+
+    monkeypatch.setattr(
+        worker_tasks,
+        "run_analysis_pipeline",
+        fail_once_then_finish,
+    )
+
+    with pytest.raises(Retry):
+        worker_tasks.process_analysis_job.apply(
+            args=[str(job.id)],
+            throw=True,
+        ).get()
+    result = worker_tasks.process_analysis_job.apply(
+        args=[str(job.id)],
+        retries=1,
+        throw=True,
+    ).get()
+
+    persisted_job = get_analysis_job_by_id(db_session, job.id)
+    assert pipeline_attempts == 2
+    assert result["status"] == "completed"
+    assert persisted_job is not None
+    assert persisted_job.status == AnalysisJobStatus.COMPLETED
 
 
 def test_analysis_enqueue_dispatches_only_after_queued_commit(
@@ -282,6 +419,7 @@ def test_analysis_dispatch_failure_is_persisted_and_reported(
     )
 
     def fail_dispatch(job_id: UUID) -> None:
+        assert isinstance(job_id, UUID)
         raise KombuOperationalError("broker unavailable")
 
     monkeypatch.setattr(analysis_queue, "dispatch_analysis_job", fail_dispatch)
