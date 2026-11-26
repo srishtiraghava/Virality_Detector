@@ -37,6 +37,17 @@ class Settings(BaseSettings):
     frame_max_height: int = Field(default=720, gt=0)
     scene_detection_threshold: float = Field(default=27.0, gt=0)
     scene_detection_min_scene_len_frames: int = Field(default=15, gt=0)
+    ffmpeg_binary: str = "ffmpeg"
+    ffprobe_binary: str = "ffprobe"
+    audio_probe_timeout_seconds: float = Field(default=20.0, gt=0)
+    audio_extraction_timeout_seconds: float = Field(default=120.0, gt=0)
+    audio_max_duration_seconds: float = Field(default=600.0, gt=0)
+    whisper_model_size: str = "base"
+    whisper_device: str = "cpu"
+    whisper_compute_type: str = "int8"
+    whisper_language: str | None = None
+    whisper_cpu_threads: int = Field(default=4, ge=1, le=64)
+    whisper_download_root: Path | None = None
 
     @field_validator("cors_origins", mode="before")
     @classmethod

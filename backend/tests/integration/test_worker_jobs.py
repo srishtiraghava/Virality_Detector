@@ -1,5 +1,7 @@
 from contextlib import contextmanager
+from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
@@ -14,6 +16,7 @@ from app.repositories.analysis_jobs import (
 )
 from app.repositories.users import create_user
 from app.repositories.videos import create_video
+from app.services.video import speech_transcription
 from app.schemas import (
     AnalysisJobCreate,
     AnalysisJobStatusUpdate,
@@ -67,6 +70,22 @@ async def test_postgresql_worker_processes_video_and_persists_artifact(
     media_path.parent.mkdir(parents=True, exist_ok=True)
     media_path.write_bytes(sample_video_file.read_bytes())
 
+    class FakeWhisperModel:
+        def transcribe(
+            self,
+            audio_path: str,
+            **options: object,
+        ) -> tuple[Iterator[object], SimpleNamespace]:
+            assert Path(audio_path).is_file()
+            assert options["vad_filter"] is False
+            return iter(()), SimpleNamespace(language="en", language_probability=0.8)
+
+    monkeypatch.setattr(
+        speech_transcription,
+        "_get_whisper_model",
+        lambda: FakeWhisperModel(),
+    )
+
     @contextmanager
     def use_isolated_session():
         try:
@@ -94,6 +113,6 @@ async def test_postgresql_worker_processes_video_and_persists_artifact(
         / "analysis"
         / str(video.id)
         / str(job.id)
-        / "v1"
+        / "v2"
         / "metadata.json"
     ).is_file()

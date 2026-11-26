@@ -1,6 +1,8 @@
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
+from typing import NoReturn
 from uuid import UUID, uuid4
 
 import pytest
@@ -20,6 +22,8 @@ from app.schemas import AnalysisJobCreate, UserCreate, VideoCreate
 from app.schemas.video_analysis import ProcessingSummary, VideoAnalysisArtifact
 from app.services import analysis_queue
 from app.services.upload.storage import StorageBackend
+from app.services.video import analysis_pipeline, speech_transcription
+from app.services.video.processing_errors import TranscriptionError
 from app.workers import database as worker_database
 from app.workers import tasks as worker_tasks
 from app.workers.celery_app import celery_app
@@ -58,6 +62,24 @@ def _use_session(session: Session):
     except Exception:
         session.rollback()
         raise
+
+
+def _mock_no_speech_whisper(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeWhisperModel:
+        def transcribe(
+            self,
+            audio_path: str,
+            **options: object,
+        ) -> tuple[Iterator[object], SimpleNamespace]:
+            assert Path(audio_path).is_file()
+            assert options["vad_filter"] is False
+            return iter(()), SimpleNamespace(language="en", language_probability=0.8)
+
+    monkeypatch.setattr(
+        speech_transcription,
+        "_get_whisper_model",
+        lambda: FakeWhisperModel(),
+    )
 
 
 def test_celery_app_configuration_and_task_registration() -> None:
@@ -203,6 +225,7 @@ def test_analysis_task_runs_pipeline_and_ignores_duplicate_delivery(
     storage_root.mkdir(parents=True)
     (storage_root / "available.mp4").write_bytes(sample_video_file.read_bytes())
     monkeypatch.setattr(settings, "storage_local_path", storage_root)
+    _mock_no_speech_whisper(monkeypatch)
     monkeypatch.setattr(
         worker_tasks,
         "worker_session",
@@ -243,13 +266,13 @@ def test_analysis_task_runs_pipeline_and_ignores_duplicate_delivery(
     assert refreshed_job.progress == 100
     assert refreshed_job.started_at is not None
     assert refreshed_job.completed_at is not None
-    assert progress_values[:5] == [5, 50, 80, 95, 100]
+    assert progress_values[:7] == [5, 50, 80, 85, 92, 95, 100]
     artifact_path = (
         storage_root
         / "analysis"
         / str(job.video_id)
         / str(job.id)
-        / "v1"
+        / "v2"
         / "metadata.json"
     )
     artifact = VideoAnalysisArtifact.model_validate_json(
@@ -257,10 +280,106 @@ def test_analysis_task_runs_pipeline_and_ignores_duplicate_delivery(
     )
     assert artifact.summary.frame_count == len(artifact.frames)
     assert artifact.summary.scene_count == len(artifact.scenes)
+    assert artifact.schema_version == 2
+    assert artifact.audio is not None
+    assert artifact.audio.status == "extracted"
+    assert artifact.transcription is not None
+    assert artifact.transcription.status == "no_speech"
+    assert artifact.audio.storage_path is not None
+    assert (storage_root / artifact.audio.storage_path).is_file()
     assert all(
         (storage_root / frame.storage_path).is_file()
         for frame in artifact.frames
     )
+
+
+def test_analysis_task_completes_visual_pipeline_without_audio(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    silent_video_file: Path,
+) -> None:
+    _, _, job = _queued_video_job(db_session, "silent-video.mp4")
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir(parents=True)
+    (storage_root / "silent-video.mp4").write_bytes(silent_video_file.read_bytes())
+    monkeypatch.setattr(settings, "storage_local_path", storage_root)
+    monkeypatch.setattr(
+        worker_tasks,
+        "worker_session",
+        lambda: _use_session(db_session),
+    )
+
+    result = worker_tasks.process_analysis_job.apply(
+        args=[str(job.id)],
+        throw=True,
+    ).get()
+
+    persisted_job = get_analysis_job_by_id(db_session, job.id)
+    artifact_path = (
+        storage_root
+        / "analysis"
+        / str(job.video_id)
+        / str(job.id)
+        / "v2"
+        / "metadata.json"
+    )
+    artifact = VideoAnalysisArtifact.model_validate_json(
+        artifact_path.read_text(encoding="utf-8")
+    )
+    assert result["status"] == "completed"
+    assert persisted_job is not None
+    assert persisted_job.status == AnalysisJobStatus.COMPLETED
+    assert artifact.audio is not None
+    assert artifact.audio.status == "skipped"
+    assert artifact.audio.reason == "no_audio_stream"
+    assert artifact.transcription is not None
+    assert artifact.transcription.status == "skipped"
+    assert artifact.transcription.reason == "no_audio_stream"
+
+
+def test_analysis_task_fails_on_transcription_error_with_checkpointed_progress(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    sample_video_file: Path,
+) -> None:
+    _, _, job = _queued_video_job(db_session, "transcription-failure.mp4")
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir(parents=True)
+    (storage_root / "transcription-failure.mp4").write_bytes(
+        sample_video_file.read_bytes()
+    )
+    monkeypatch.setattr(settings, "storage_local_path", storage_root)
+    monkeypatch.setattr(
+        worker_tasks,
+        "worker_session",
+        lambda: _use_session(db_session),
+    )
+
+    def fail_transcription(
+        audio_path: Path,
+        *,
+        language_override: str | None = None,
+    ) -> NoReturn:
+        assert audio_path.is_file()
+        assert language_override is None
+        raise TranscriptionError("Speech transcription could not be completed")
+
+    monkeypatch.setattr(analysis_pipeline, "transcribe_audio", fail_transcription)
+    result = worker_tasks.process_analysis_job.apply(
+        args=[str(job.id)],
+        throw=True,
+    ).get()
+
+    persisted_job = get_analysis_job_by_id(db_session, job.id)
+    assert result == {
+        "status": "failed",
+        "message": "Speech transcription could not be completed",
+    }
+    assert persisted_job is not None
+    assert persisted_job.status == AnalysisJobStatus.FAILED
+    assert persisted_job.progress == 85
 
 
 def test_analysis_task_records_sanitized_media_failure_and_progress(
@@ -327,6 +446,7 @@ def test_celery_operational_retry_resumes_processing_job(
             progress_callback(50)
             raise OperationalError("test query", {}, RuntimeError("temporary"))
         return VideoAnalysisArtifact(
+            schema_version=1,
             frames=[],
             scenes=[],
             summary=ProcessingSummary(

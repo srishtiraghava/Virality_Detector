@@ -6,11 +6,20 @@ from pathlib import Path
 from app.core.config import settings
 from app.models.analysis_job import AnalysisJob
 from app.models.video import Video
-from app.schemas.video_analysis import ProcessingSummary, VideoAnalysisArtifact
+from app.schemas.video_analysis import (
+    ProcessingSummary,
+    TranscriptionMetadata,
+    VideoAnalysisArtifact,
+)
 from app.services.upload.storage import StorageBackend, StorageError
+from app.services.video.audio_extraction import extract_audio
 from app.services.video.frame_extraction import extract_video_frames
-from app.services.video.processing_errors import AnalysisArtifactError
+from app.services.video.processing_errors import (
+    AnalysisArtifactError,
+    AudioExtractionError,
+)
 from app.services.video.scene_detection import detect_video_scenes
+from app.services.video.speech_transcription import transcribe_audio
 
 
 def run_analysis_pipeline(
@@ -21,7 +30,7 @@ def run_analysis_pipeline(
     progress_callback: Callable[[int], None],
 ) -> VideoAnalysisArtifact:
     started_at = time.perf_counter()
-    output_prefix = f"analysis/{video.id}/{job.id}/v1"
+    output_prefix = f"analysis/{video.id}/{job.id}/v2"
     frame_prefix = f"{output_prefix}/frames"
     frame_directory = storage.path_for_key(frame_prefix)
 
@@ -43,9 +52,43 @@ def run_analysis_pipeline(
     )
     progress_callback(80)
 
+    audio_asset = extract_audio(
+        media_path,
+        storage,
+        f"{output_prefix}/audio/audio.wav",
+        has_audio=video.has_audio,
+        video_duration_seconds=video.duration,
+        ffmpeg_binary=settings.ffmpeg_binary,
+        ffprobe_binary=settings.ffprobe_binary,
+        probe_timeout_seconds=settings.audio_probe_timeout_seconds,
+        extraction_timeout_seconds=settings.audio_extraction_timeout_seconds,
+        max_duration_seconds=settings.audio_max_duration_seconds,
+    )
+    progress_callback(85)
+
+    if audio_asset.metadata.status == "extracted":
+        if audio_asset.local_path is None:
+            raise AudioExtractionError("Extracted audio is unavailable for transcription")
+        transcription = transcribe_audio(
+            audio_asset.local_path,
+            language_override=settings.whisper_language,
+        )
+    else:
+        transcription = TranscriptionMetadata(
+            status="skipped",
+            reason="no_audio_stream",
+            text="",
+            segments=[],
+            processing_duration_seconds=0,
+        )
+    progress_callback(92)
+
     artifact = VideoAnalysisArtifact(
+        schema_version=2,
         frames=frames,
         scenes=scenes,
+        audio=audio_asset.metadata,
+        transcription=transcription,
         summary=ProcessingSummary(
             frame_count=len(frames),
             scene_count=len(scenes),

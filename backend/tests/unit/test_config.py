@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from pydantic import SecretStr
 
@@ -26,6 +28,17 @@ def test_settings_load_from_environment(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("FRAME_MAX_HEIGHT", "360")
     monkeypatch.setenv("SCENE_DETECTION_THRESHOLD", "18.5")
     monkeypatch.setenv("SCENE_DETECTION_MIN_SCENE_LEN_FRAMES", "8")
+    monkeypatch.setenv("FFMPEG_BINARY", "ffmpeg-test")
+    monkeypatch.setenv("FFPROBE_BINARY", "ffprobe-test")
+    monkeypatch.setenv("AUDIO_PROBE_TIMEOUT_SECONDS", "12")
+    monkeypatch.setenv("AUDIO_EXTRACTION_TIMEOUT_SECONDS", "90")
+    monkeypatch.setenv("AUDIO_MAX_DURATION_SECONDS", "420")
+    monkeypatch.setenv("WHISPER_MODEL_SIZE", "small")
+    monkeypatch.setenv("WHISPER_DEVICE", "cuda")
+    monkeypatch.setenv("WHISPER_COMPUTE_TYPE", "float16")
+    monkeypatch.setenv("WHISPER_LANGUAGE", "en")
+    monkeypatch.setenv("WHISPER_CPU_THREADS", "6")
+    monkeypatch.setenv("WHISPER_DOWNLOAD_ROOT", "test-model-cache")
 
     config = Settings(_env_file=None)
 
@@ -50,6 +63,17 @@ def test_settings_load_from_environment(monkeypatch: pytest.MonkeyPatch) -> None
     assert config.frame_max_height == 360
     assert config.scene_detection_threshold == 18.5
     assert config.scene_detection_min_scene_len_frames == 8
+    assert config.ffmpeg_binary == "ffmpeg-test"
+    assert config.ffprobe_binary == "ffprobe-test"
+    assert config.audio_probe_timeout_seconds == 12
+    assert config.audio_extraction_timeout_seconds == 90
+    assert config.audio_max_duration_seconds == 420
+    assert config.whisper_model_size == "small"
+    assert config.whisper_device == "cuda"
+    assert config.whisper_compute_type == "float16"
+    assert config.whisper_language == "en"
+    assert config.whisper_cpu_threads == 6
+    assert config.whisper_download_root == Path("test-model-cache")
 
 
 def test_settings_default_celery_urls_are_local_redis() -> None:

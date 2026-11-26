@@ -1,6 +1,6 @@
 # ViralScope AI
 
-ViralScope AI is a modular-monolith foundation for a multimodal video intelligence and virality-prediction platform. The backend includes PostgreSQL persistence, email/password authentication, authenticated video upload and management, FFprobe metadata extraction, and a Celery pipeline for video frame extraction and scene detection. Audio analysis, machine learning, and recommendations are not implemented.
+ViralScope AI is a modular-monolith foundation for a multimodal video intelligence and virality-prediction platform. The backend includes PostgreSQL persistence, email/password authentication, authenticated video upload and management, FFprobe metadata extraction, and a Celery pipeline for video frame extraction, scene detection, audio extraction, and speech transcription. Machine learning and recommendations are not implemented.
 
 ## Architecture
 
@@ -10,7 +10,7 @@ ViralScope AI is a modular-monolith foundation for a multimodal video intelligen
 - **Frontend:** `frontend/` is reserved for a future React, TypeScript, and Vite application.
 - **Research and artifacts:** `research/` and `ml_artifacts/` keep future experiments and generated model files separate from application code.
 
-The backend separates HTTP routes, configuration, database access, models, schemas, repositories, and domain services. Upload storage, FFprobe metadata extraction, video frame sampling, and PySceneDetect scene detection are implemented; ML subpackages remain structural only.
+The backend separates HTTP routes, configuration, database access, models, schemas, repositories, and domain services. Upload storage, FFprobe metadata extraction, video frame sampling, PySceneDetect scene detection, FFmpeg audio conversion, and faster-whisper transcription are implemented; ML subpackages remain structural only.
 
 ## Prerequisites
 
@@ -18,7 +18,8 @@ The backend separates HTTP routes, configuration, database access, models, schem
 - Python 3.11.
 - Git.
 - Docker Desktop with the Docker Engine running for PostgreSQL and Redis.
-- FFmpeg tools on `PATH`: FFprobe is required by the API; FFmpeg is used to generate valid media fixtures for tests.
+- FFmpeg tools on `PATH`: FFprobe inspects uploads and audio streams; FFmpeg generates test media and extracts analysis audio.
+- Network access on the first transcription, unless the configured faster-whisper model is already cached locally.
 
 ## Windows PowerShell setup
 
@@ -118,13 +119,13 @@ PostgreSQL data persists in the `postgres_data` named volume. Compose health che
 
 The API persists each analysis job as `queued` before publishing its Celery task. If dispatch fails, it persists a sanitized `failed` status and returns HTTP 503 with the job ID so the failure is visible. Workers claim queued jobs under a PostgreSQL row lock and a job-scoped advisory lock, so duplicate deliveries remain excluded while progress checkpoints are committed. Each task owns and closes its database session; processing errors persist a sanitized failure, while transient database errors retain the Celery retry policy.
 
-The current implemented stages sample and validate representative video frames, detect scene cuts with PySceneDetect's `ContentDetector`, and persist a versioned JSON artifact through the configured storage backend. The worker commits progress at the stage boundaries and marks a job completed only after the artifact is stored. Audio analysis and ML inference remain explicit future stages; jobs do not claim those results.
+The current implemented stages sample and validate representative video frames, detect scene cuts with PySceneDetect's `ContentDetector`, convert an available audio stream to mono 16 kHz PCM WAV, and transcribe speech with faster-whisper. Videos without audio complete their visual analysis with audio and transcription marked `skipped`; empty recognized speech is represented as `no_speech`. The worker commits progress at stage boundaries and marks a job completed only after all applicable stages and the versioned artifact are stored. VAD, sound classification, ML inference, and recommendations remain future stages; jobs do not claim those results.
 
 The defaults use the existing Redis port: broker `redis://127.0.0.1:6380/0`, results `redis://127.0.0.1:6380/1`. Override these through `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND` for other environments.
 
 ### Video processing settings and outputs
 
-Set these options in `.env` to control frame sampling and scene detection:
+Set these options in `.env` to control frame sampling, scene detection, audio extraction, and transcription:
 
 | Environment variable | Default | Description |
 | --- | ---: | --- |
@@ -134,8 +135,30 @@ Set these options in `.env` to control frame sampling and scene detection:
 | `FRAME_MAX_HEIGHT` | `720` | Maximum output frame height; larger frames are downscaled without changing aspect ratio. |
 | `SCENE_DETECTION_THRESHOLD` | `27.0` | PySceneDetect `ContentDetector` content-change threshold. |
 | `SCENE_DETECTION_MIN_SCENE_LEN_FRAMES` | `15` | Minimum number of frames between scene cuts. |
+| `FFMPEG_BINARY` | `ffmpeg` | FFmpeg executable or path used for audio conversion. |
+| `FFPROBE_BINARY` | `ffprobe` | FFprobe executable or path used to inspect audio streams when upload metadata is unavailable. |
+| `AUDIO_PROBE_TIMEOUT_SECONDS` | `20` | Maximum time allowed for an audio-stream probe. |
+| `AUDIO_EXTRACTION_TIMEOUT_SECONDS` | `120` | Maximum time allowed for FFmpeg audio extraction. |
+| `AUDIO_MAX_DURATION_SECONDS` | `600` | Maximum media/audio duration accepted for audio processing. |
+| `WHISPER_MODEL_SIZE` | `base` | faster-whisper model size, such as `tiny`, `base`, or `small`. |
+| `WHISPER_DEVICE` | `cpu` | faster-whisper device; `cpu` is the local default. |
+| `WHISPER_COMPUTE_TYPE` | `int8` | faster-whisper compute type; `int8` is the local CPU default. |
+| `WHISPER_LANGUAGE` | unset | Optional language-code override; unset enables automatic language detection. |
+| `WHISPER_CPU_THREADS` | `4` | CPU threads used by the model. |
+| `WHISPER_DOWNLOAD_ROOT` | unset | Optional model-cache directory; otherwise faster-whisper uses its default cache. |
 
-Each job writes JPEGs named `frame_000001.jpg`, etc., under `analysis/<video-id>/<job-id>/v1/frames/`. `metadata.json` in that versioned directory contains `schema_version`, frame records (`timestamp`, `storage_path`, `width`, `height`), scene records (`start_time`, `end_time`, `duration`), and a processing summary (`frame_count`, `scene_count`, `processing_duration_seconds`). Frame files and metadata stay in the configured storage backend; frame bytes are not written to PostgreSQL. There is no migration for this milestone.
+Each job writes JPEGs named `frame_000001.jpg`, etc., and `audio/audio.wav` when audio is present, under `analysis/<video-id>/<job-id>/v2/`. Its `metadata.json` contains `schema_version: 2`, frame records (`timestamp`, `storage_path`, `width`, `height`), scene records (`start_time`, `end_time`, `duration`), audio extraction status and stream metadata, transcription status, detected language when available, transcript text and timestamped segments, and processing summaries. Audio and frame files plus JSON metadata stay in the configured storage backend; media bytes and transcripts are not stored in PostgreSQL. Existing v1 frame/scene artifacts remain readable. This milestone does not require a database migration.
+
+The faster-whisper model loads lazily on the first audio-bearing job in each worker process and is cached for later jobs in that process; initialization is synchronized to avoid duplicate concurrent loads. Model weights are not downloaded on every task. A first run downloads the selected weights if absent from the model cache, so pre-cache the model or configure `WHISPER_DOWNLOAD_ROOT` when workers must run offline. CPU `base`/`int8` is the default local configuration; transcription can be CPU- and memory-intensive, especially with larger models or multiple worker processes. Each worker process has its own cached model. Audio processing is capped by `AUDIO_MAX_DURATION_SECONDS`; FFmpeg work has explicit timeouts. Transcription does not run VAD.
+
+To run a real local transcription smoke test after an audio-bearing analysis has written a WAV artifact, from `backend\` set `$audioPath` to its `analysis\<video-id>\<job-id>\v2\audio\audio.wav` path and run:
+
+```powershell
+$audioPath = "C:\path\to\storage\analysis\video-id\job-id\v2\audio\audio.wav"
+python -c "import sys; from pathlib import Path; from app.services.video.speech_transcription import transcribe_audio; print(transcribe_audio(Path(sys.argv[1])).model_dump_json(indent=2))" $audioPath
+```
+
+This command may download the configured model on first use; ordinary tests mock inference and do not download weights.
 
 Start Redis using the existing Compose service, without changing ports:
 
@@ -174,11 +197,11 @@ Pop-Location
 
 Unit tests use FastAPI's in-process client and SQLite. PostgreSQL integration tests require an explicit `TEST_DATABASE_URL` and use a temporary isolated schema.
 
-The video pipeline tests use FFmpeg to generate real short videos and exercise frame timestamps, output limits, scene changes, corrupt/missing inputs, artifact validation, and the actual Celery task in eager mode:
+The video and audio pipeline tests use FFmpeg to generate real short videos and exercise frame and audio extraction, timestamps, output limits, scene changes, no-audio and silent-audio cases, corrupt/missing inputs, artifact validation, mocked transcription, and the actual Celery task in eager mode:
 
 ```powershell
 Push-Location backend
-python -m pytest tests\unit\test_video_analysis.py tests\unit\test_workers.py
+python -m pytest tests\unit\test_video_analysis.py tests\unit\test_audio_processing.py tests\unit\test_workers.py
 Pop-Location
 ```
 

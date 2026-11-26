@@ -267,6 +267,22 @@ def test_video_analysis_artifact_schema_is_versioned_and_validated() -> None:
     assert artifact.summary.scene_count == len(artifact.scenes)
 
 
+def test_legacy_video_analysis_artifact_defaults_to_version_one() -> None:
+    artifact = VideoAnalysisArtifact.model_validate(
+        {
+            "frames": [],
+            "scenes": [],
+            "summary": {
+                "frame_count": 0,
+                "scene_count": 0,
+                "processing_duration_seconds": 0,
+            },
+        }
+    )
+
+    assert artifact.schema_version == 1
+
+
 def test_scene_schema_rejects_inconsistent_time_bounds() -> None:
     with pytest.raises(ValidationError):
         SceneMetadata(start_time=2.0, end_time=1.0, duration=1.0)

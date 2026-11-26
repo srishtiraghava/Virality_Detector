@@ -12,3 +12,11 @@ class SceneDetectionError(VideoProcessingError):
 
 class AnalysisArtifactError(VideoProcessingError):
     pass
+
+
+class AudioExtractionError(VideoProcessingError):
+    pass
+
+
+class TranscriptionError(VideoProcessingError):
+    pass
